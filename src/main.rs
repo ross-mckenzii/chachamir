@@ -4,6 +4,7 @@
 // all crates are confirmed to be compatible with MIT
 extern crate shamir; // shamir
 extern crate chacha20poly1305; // chacha20
+extern crate clap; // clap (CLI parser)
 
 // things from the stdlib
 use std::env;
@@ -18,13 +19,12 @@ use chacha20poly1305::aead::{Aead, NewAead};
 
 use shamir::SecretData;
 
+use clap::Parser;
+
 // ---------
 // constants
 // ---------
-
-const VERSION_MAJOR: u8 = 0;
-const VERSION_MINOR: u8 = 1;
-const VERSION_PATCH: u8 = 0;
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ---------
 // functions
@@ -54,15 +54,18 @@ fn logo(){ // prints CCM logo
     println!("( (__ ) __ (/    \\( (__ ) __ (/    \\/ \\/ \\ )(  )   /");
     println!(" \\___)\\_)(_/\\_/\\_/ \\___)\\_)(_/\\_/\\_/\\_)(_/(__)(__\\_)");
     println!("----");
-    println!("version {}.{}.{}", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
+    println!("version {}", VERSION);
     println!("");
 }
+
 
 // ---------
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     logo(); // print logo
+
+
 
     let cnts = read_file(&args[1]);
     println!("{:?}", cnts);

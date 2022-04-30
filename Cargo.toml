@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 chacha20poly1305 = "0.9.0"
 shamir = "~1.0"
+clap = { version = "3.1", features = ["derive"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
