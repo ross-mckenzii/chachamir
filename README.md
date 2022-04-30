@@ -8,7 +8,7 @@ ChaCha20-based file encryption tool, utilising Shamir-style secret sharing to di
 
 ### Encryption
 
-`chachamir -e <FILE> -p <number> -t <number> -s <PATH; OPTIONAL>`
+`chachamir -e <FILE> -p <SHARE_COUNT> -t <THRESHOLD> -s <PATH; OPTIONAL>`
 Where `p` is the total number of shares you wish to create, and `t` is the threshold number of shares needed to reconstruct the key. You can also use `s` to specify the folder for shares to be saved to (this will default to your current working directory if not specified)
 
 ### Decryption
