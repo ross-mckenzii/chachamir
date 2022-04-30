@@ -5,6 +5,7 @@
 
 extern crate chacha20poly1305; // chacha20 implementation
 extern crate clap; // clap (CLI parser)
+extern crate hex; // Hex stuff (for using nonces as IDs)
 extern crate path_clean; // Path clean (for absolute paths)
 extern crate rand; // RNG (for key generation)
 extern crate sharks; // Shamir's Secret Sharing
@@ -148,12 +149,21 @@ fn read_file(filepath: &Path) -> Vec<u8> { // Raw function for reading files
     contents
 }
 
-fn write_file(dir: &Path, contents: &Vec<u8> ) -> PathBuf { // Raw function for writing out files
-    let filepath = dir.to_owned();
+fn write_file<'a>(filepath: &'a Path, contents: &Vec<u8>) -> &'a Path { // Raw function for writing out files
+    let mut file = fs::File::create(&filepath);
+
+    let mut file = match file { // handle file creation
+        Ok(res) => res,
+        Err(error) => panic!("[!] Could not create file {}! | {:?}", filepath.display(), error),
+    };
+
+    let write_result = file.write_all(&contents);
     
-    let mut file = fs::File::create(&filepath).unwrap();
-    file.write_all(&contents).expect("oh noes!");
-    
+    let write_result = match write_result { // handle file write
+        Ok(res) => (),
+        Err(error) => panic!("[!] Could not write file {}! | {:?}", filepath.display(), error),
+    };
+
     filepath
 }
 
@@ -255,6 +265,10 @@ fn main() {
         OsRng.fill_bytes(&mut nonce);
         println!("[-] Nonce generated");
 
+        let hex_nonce = hex::encode(nonce); // hex representation of the nonce
+
+        println!("{}", hex_nonce);
+
         // Split into shares of the secret
         let sss = Sharks(threshold); // init sharks and set threshold
         let dealer = sss.dealer(&key);
@@ -268,7 +282,15 @@ fn main() {
 
         println!("[-] Derived {} share(s) from key | threshold {}", &shares.len(), &threshold);
 
+        // Recover the shares again for good measure
+        let recovered_shares: Vec<Share> = shares.iter().map(|s| Share::try_from(s.as_slice()).unwrap()).collect();
+        let recovered_key = sss.recover(&recovered_shares).unwrap(); // REMINDER: this is a Result, handle this later
         
+        if recovered_key != key { // handle unrecoverable shares (should never happen?)
+            panic!("[!] Unable to recover the key from our shares?!");
+        }
+
+
     }
     else if args.decrypt { // Decryption
         println!("[*] Chose to decrypt a file...");
