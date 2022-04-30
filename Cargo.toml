@@ -11,8 +11,11 @@ chacha20poly1305 = "0.9.0"
 clap = { version = "3.1", features = ["derive"] }
 path-clean = "0.1.0"
 rand = "0.8.5"
-rusty_secrets = "0.2.2"
+sharks = "0.4"
 
+[replace]
+"rusty_secrets:0.2.2" = { git = 'https://github.com/alexcrichton/cookie-rs.git' }
+# rusty_secrets did not update its ring dependency
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

@@ -7,7 +7,7 @@ extern crate chacha20poly1305; // chacha20 implementation
 extern crate clap; // clap (CLI parser)
 extern crate path_clean; // Path clean (for absolute paths)
 extern crate rand; // RNG (for key generation)
-extern crate rusty_secrets; // Shamir's Secret Sharing
+extern crate sharks; // Shamir's Secret Sharing
 
 // things from the stdlib
 use std::env;
@@ -29,7 +29,7 @@ use path_clean::PathClean;
 use rand::rngs::OsRng;
 use rand::RngCore;
 
-use rusty_secrets::sss;
+use sharks::{ Sharks, Share };
 
 // -------
 // CLI parsing
@@ -97,9 +97,6 @@ fn stringify_path(path: &PathBuf) -> String { // turn path into string for print
 }
 
 fn get_paths(cli_args: Arguments) -> [PathBuf; 2] { // Returns the file for encryption and folder for shares
-
-    println!("{:?}", cli_args);
-
     // Get target file from path buffer
     let target_file = PathBuf::from(&cli_args.file);
     println!("[+] File: {}", stringify_path(&target_file) );
@@ -128,22 +125,31 @@ fn get_paths(cli_args: Arguments) -> [PathBuf; 2] { // Returns the file for encr
         }
     };
 
-    //let paths: [PathBuf; 2] = [target_file, shares_dir];
-
-    let p = [PathBuf::from("E:/"),PathBuf::from("C:/")];
-    p
-    //paths
+    let paths: [PathBuf; 2] = [target_file, shares_dir];
+    paths
 }
 
 fn read_file(filepath: &Path) -> Vec<u8> { // Raw function for reading files
     let mut contents = vec![];
-    let result = fs::File::open(&filepath).unwrap().read_to_end(&mut contents).expect("Error reading file");
+    let open = fs::File::open(&filepath);
+
+    let mut open = match open { // handle file open
+        Ok(file) => file,
+        Err(error) => panic!("[!] Could not open file {}! | {:?}", filepath.display(), error),
+    };
+
+    let read_result = open.read_to_end(&mut contents);
+
+    let read_result = match read_result { // handle file read
+        Ok(res) => (),
+        Err(error) => panic!("[!] Could not read file {}! | {:?}", filepath.display(), error),
+    };
 
     contents
 }
 
 fn write_file(dir: &Path, contents: &Vec<u8> ) -> PathBuf { // Raw function for writing out files
-    let mut filepath = dir.to_owned();
+    let filepath = dir.to_owned();
     
     let mut file = fs::File::create(&filepath).unwrap();
     file.write_all(&contents).expect("oh noes!");
@@ -224,9 +230,6 @@ fn main() {
         if player_cnt < threshold {
             println!("[!] Share threshold exceeds maximum number of players. File would be unrecoverable!");
             process::exit(1);
-        } else if player_cnt > 255 {
-            println!("[!] ChaChaMir cannot produce more than 255 shares.");
-            process::exit(1);
         } else if player_cnt < 1 {
             println!("[!] Number of shares cannot be zero");
             process::exit(1);
@@ -253,16 +256,19 @@ fn main() {
         println!("[-] Nonce generated");
 
         // Split into shares of the secret
-        let shares = match split_secret(&threshold, &player_cnt, &key, true) {
-            Ok(shares) => {
-                println!("{:?}", shares);
-                // Do something with the shares
-            },
-            Err(_) => {
-                // Deal with error
-            }
-        }
+        let sss = Sharks(threshold); // init sharks and set threshold
+        let dealer = sss.dealer(&key);
 
+        // push all the generated shares into a vector of vectors 0_0
+        let mut shares: Vec<Vec<u8>> = Vec::new();
+        for s in dealer.take(<usize as From<u8>>::from(player_cnt) ) {
+            
+            shares.push(Vec::from(&s) );
+        };
+
+        println!("[-] Derived {} share(s) from key | threshold {}", &shares.len(), &threshold);
+
+        
     }
     else if args.decrypt { // Decryption
         println!("[*] Chose to decrypt a file...");
