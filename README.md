@@ -1,6 +1,6 @@
 # chachamir
 
-[Alt text](/assets/ccm_w_text.png?raw=true "ChaChaMir")
+[ChaChaMir](https://codeberg.org/ross-mckenzie/chachamir/raw/branch/development/assets/ccm_w_text.png "ChaChaMir")
 
 ChaCha20-based file encryption tool, utilising Shamir-style secret sharing to distribute its key.
 
