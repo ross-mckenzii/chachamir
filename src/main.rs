@@ -6,7 +6,8 @@
 extern crate chacha20poly1305; // chacha20 implementation
 extern crate clap; // clap (CLI parser)
 extern crate path_clean; // Path clean (for absolute paths)
-extern crate shamir; // shamir
+extern crate rand; // RNG (for key generation)
+extern crate rusty_secrets; // Shamir's Secret Sharing
 
 // things from the stdlib
 use std::env;
@@ -21,11 +22,14 @@ use std::str;
 use chacha20poly1305::aead::{Aead, NewAead};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
-use shamir::SecretData;
-
 use clap::Parser;
 
 use path_clean::PathClean;
+
+use rand::rngs::OsRng;
+use rand::RngCore;
+
+use rusty_secrets::sss;
 
 // -------
 // CLI parsing
@@ -48,13 +52,13 @@ struct Arguments {
     #[clap(short, long, takes_value = false, conflicts_with = "encrypt", required_unless_present = "encrypt")]
     decrypt: bool,
 
-    /// Total number of shares to generate (max 65,535)
-    #[clap(short, long)]
-    players: Option<u16>,
+    /// Total number of shares to generate (max 255)
+    #[clap(short, long, required_unless_present = "decrypt")]
+    players: Option<u8>,
 
-    /// Number of shares needed to reconstruct the secret (max 65,535; cannot be more than total)
-    #[clap(short, long)]
-    threshold: Option<u16>,
+    /// Number of shares needed to reconstruct the secret (max 255; cannot be more than total)
+    #[clap(short, long, required_unless_present = "decrypt")]
+    threshold: Option<u8>,
 
     /// Path to the folder containing shares, or to write shares to (defaults to current working dir)
     #[clap(parse(from_os_str), short, long)]
@@ -147,7 +151,6 @@ fn write_file(dir: &Path, contents: &Vec<u8> ) -> PathBuf { // Raw function for 
     filepath
 }
 
-
 fn chacha_encrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, plaintext: &[u8] ) -> Vec<u8> { // encrypt plaintext with chacha20
     let key = Key::from_slice(&u8_key);
     let cc20 = ChaCha20Poly1305::new(key);
@@ -205,16 +208,60 @@ fn main() {
     if args.encrypt { // Encryption
         println!("[*] Chose to encrypt a file...");
         
+        // Dirty way of getting Option<u8> -> u8
+        let player_cnt = match args.players {
+            Some(val) => val,
+            None => 0
+        };
+
+        let threshold = match args.threshold {
+            Some(val) => val,
+            None => 0
+        };
+
+        // Checking against bad things
+
+        if player_cnt < threshold {
+            println!("[!] Share threshold exceeds maximum number of players. File would be unrecoverable!");
+            process::exit(1);
+        } else if player_cnt > 255 {
+            println!("[!] ChaChaMir cannot produce more than 255 shares.");
+            process::exit(1);
+        } else if player_cnt < 1 {
+            println!("[!] Number of shares cannot be zero");
+            process::exit(1);
+        } else if threshold < 1 {
+            println!("[!] Threshold of shares cannot be zero");
+            process::exit(1);
+        }
+
         let paths = get_paths(args);
         let target_file = &paths[0];
         let shares_dir = &paths[1];
 
-        println!("{:?}", &target_file);
-        process::exit(0);
-
         // print share dir being used
         println!("[+] Storing shares at {}", stringify_path(&shares_dir) );
 
+        // Generate 256-bit key
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+        println!("[-] Key generated");
+
+        // Generate 86-bit nonce (also used to ID files)
+        let mut nonce = [0u8; 32];
+        OsRng.fill_bytes(&mut nonce);
+        println!("[-] Nonce generated");
+
+        // Split into shares of the secret
+        let shares = match split_secret(&threshold, &player_cnt, &key, true) {
+            Ok(shares) => {
+                println!("{:?}", shares);
+                // Do something with the shares
+            },
+            Err(_) => {
+                // Deal with error
+            }
+        }
 
     }
     else if args.decrypt { // Decryption
