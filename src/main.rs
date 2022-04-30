@@ -94,6 +94,8 @@ fn stringify_path(path: &PathBuf) -> String { // turn path into string for print
 
 fn get_paths(cli_args: Arguments) -> [PathBuf; 2] { // Returns the file for encryption and folder for shares
 
+    println!("{:?}", cli_args);
+
     // Get target file from path buffer
     let target_file = PathBuf::from(&cli_args.file);
     println!("[+] File: {}", stringify_path(&target_file) );
@@ -122,8 +124,11 @@ fn get_paths(cli_args: Arguments) -> [PathBuf; 2] { // Returns the file for encr
         }
     };
 
-    let paths: [PathBuf; 2] = [target_file, shares_dir];
-    paths
+    //let paths: [PathBuf; 2] = [target_file, shares_dir];
+
+    let p = [PathBuf::from("E:/"),PathBuf::from("C:/")];
+    p
+    //paths
 }
 
 fn read_file(filepath: &Path) -> Vec<u8> { // Raw function for reading files
@@ -133,14 +138,47 @@ fn read_file(filepath: &Path) -> Vec<u8> { // Raw function for reading files
     contents
 }
 
-fn write_file(dir: &Path, filename: &str, contents: &Vec<u8> ) -> PathBuf { // Raw function for writing out files
+fn write_file(dir: &Path, contents: &Vec<u8> ) -> PathBuf { // Raw function for writing out files
     let mut filepath = dir.to_owned();
-    filepath.push(filename);
     
-    let mut file = fs::File::create(filename).unwrap();
+    let mut file = fs::File::create(&filepath).unwrap();
     file.write_all(&contents).expect("oh noes!");
     
     filepath
+}
+
+
+fn chacha_encrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, plaintext: &[u8] ) -> Vec<u8> { // encrypt plaintext with chacha20
+    let key = Key::from_slice(&u8_key);
+    let cc20 = ChaCha20Poly1305::new(key);
+
+    let nonce = Nonce::from_slice(&u8_nonce);
+
+    let ciphertext = cc20.encrypt(nonce, plaintext)
+        .expect("Failure when encrypting file");
+    
+    // Decrypt the ciphertext to ensure that it works
+    let chk_plaintext = cc20.decrypt(nonce, ciphertext.as_ref())
+    .expect("Failure when verifying ciphertext");
+
+    if &plaintext == &chk_plaintext { // if everything is good
+        ciphertext
+    } else { // oh noes
+        panic!("[!] Critical error in encryption process - decrypted ciphertext does not match plaintext!");
+    }
+}
+
+fn chacha_decrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, ciphertext: &[u8] ) -> Vec<u8> { // decrypt ciphertext with chacha20
+    let key = Key::from_slice(&u8_key);
+    let cc20 = ChaCha20Poly1305::new(key);
+
+    let nonce = Nonce::from_slice(&u8_nonce);
+    
+    // Decrypt the ciphertext
+    let plaintext = cc20.decrypt(nonce, ciphertext)
+    .expect("Failure when decrypting ciphertext");
+
+    plaintext
 }
 
 fn logo(){ // prints CCM logo
@@ -171,8 +209,13 @@ fn main() {
         let target_file = &paths[0];
         let shares_dir = &paths[1];
 
+        println!("{:?}", &target_file);
+        process::exit(0);
+
         // print share dir being used
         println!("[+] Storing shares at {}", stringify_path(&shares_dir) );
+
+
     }
     else if args.decrypt { // Decryption
         println!("[*] Chose to decrypt a file...");
@@ -183,6 +226,8 @@ fn main() {
 
         // print share dir being used
         println!("[+] Shares folder: {}", stringify_path(&shares_dir) );
+
+
     }
 
     process::exit(0);
