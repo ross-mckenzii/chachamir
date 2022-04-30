@@ -10,6 +10,7 @@ extern crate clap; // clap (CLI parser)
 use std::env;
 use std::io;
 use std::fs;
+use std::path;
 use std::str;
 use std::io::prelude::*;
 
@@ -20,6 +21,32 @@ use chacha20poly1305::aead::{Aead, NewAead};
 use shamir::SecretData;
 
 use clap::Parser;
+
+// -------
+// CLI parsing
+// -------
+
+#[derive(Parser, Debug)]
+#[clap(version, about)]
+/// Encrypts and decrypts files using ChaCha20 and Shamir's Secret Sharing
+struct Arguments {
+
+    /// Path to the file needing encryption/decryption
+    #[clap(parse(from_os_str), forbid_empty_values = true)]
+    file: path::PathBuf,
+
+    // Encrypt file
+    #[clap(short, long, takes_value = false)]
+    encrypt: bool,
+
+    // Decrypt file
+    #[clap(short, long, takes_value = false)]
+    decrypt: bool,
+
+    /// Path to the folder containing shares, or to write shares to (defaults to current working dir)
+    #[clap(parse(from_os_str), short)]
+    shares: Option<path::PathBuf>,
+}
 
 // ---------
 // constants
@@ -62,11 +89,8 @@ fn logo(){ // prints CCM logo
 // ---------
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args = Arguments::parse();
     logo(); // print logo
 
-
-
-    let cnts = read_file(&args[1]);
-    println!("{:?}", cnts);
+    println!("{:?}", args);
 }
