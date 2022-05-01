@@ -10,13 +10,13 @@ ChaCha20-based file encryption tool, utilising Shamir-style secret sharing to di
 
 `chachamir -e <FILE> -p <SHARE_COUNT> -t <THRESHOLD> -s <PATH; OPTIONAL>`
 
-Where `p` is the total number of shares you wish to create, and `t` is the threshold number of shares needed to reconstruct the key. You can also use `s` to specify the folder for shares to be saved to (this will default to your current working directory if not specified)
+Where `p` is the total number of shares you wish to create, and `t` is the threshold number of shares needed to reconstruct the key. You can also use `s` to specify the directory for shares to be saved to (this will default to your current working directory if not specified)
 
 ### Decryption
 
 `chachamir -d <FILE> -s <PATH; OPTIONAL>`
 
-Where `s` is the folder containing all of your shares (this will default to your current working directory if not specified). **All share files must have the extension `.ccms` to be detected**. File will be decrypted in the same directory as the encrypted file.
+Where `s` is the directory containing all of your shares (this will default to your current working directory if not specified). **All share files must have the extension `.ccms` to be detected**. File will be decrypted in the same directory as the encrypted file.
 
 ## Building
 

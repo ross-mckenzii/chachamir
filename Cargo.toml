@@ -14,9 +14,5 @@ rand = "0.8.5"
 sharks = "0.4"
 hex = "0.4.3"
 
-[replace]
-"rusty_secrets:0.2.2" = { git = 'https://github.com/alexcrichton/cookie-rs.git' }
-# rusty_secrets did not update its ring dependency
-
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

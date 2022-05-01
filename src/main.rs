@@ -61,7 +61,7 @@ struct Arguments {
     #[clap(short, long, required_unless_present = "decrypt")]
     threshold: Option<u8>,
 
-    /// Path to the folder containing shares, or to write shares to (defaults to current working dir)
+    /// Path to the directory containing shares, or to write shares to (defaults to current working dir)
     #[clap(parse(from_os_str), short, long)]
     shares: Option<PathBuf>,
 }
@@ -97,7 +97,7 @@ fn stringify_path(path: &PathBuf) -> String { // turn path into string for print
     str_path
 }
 
-fn get_paths(cli_args: Arguments) -> [PathBuf; 2] { // Returns the file for encryption and folder for shares
+fn get_paths(cli_args: Arguments) -> [PathBuf; 2] { // Returns the file for encryption and directory for shares
     // Get target file from path buffer
     let target_file = PathBuf::from(&cli_args.file);
     println!("[+] File: {}", stringify_path(&target_file) );
@@ -267,16 +267,14 @@ fn main() {
 
         let hex_nonce = hex::encode(nonce); // hex representation of the nonce
 
-        println!("{}", hex_nonce);
-
         // Split into shares of the secret
         let sss = Sharks(threshold); // init sharks and set threshold
         let dealer = sss.dealer(&key);
 
-        // push all the generated shares into a vector of vectors 0_0
+        // push all the generated shares into a 2d vector
         let mut shares: Vec<Vec<u8>> = Vec::new();
+
         for s in dealer.take(<usize as From<u8>>::from(player_cnt) ) {
-            
             shares.push(Vec::from(&s) );
         };
 
@@ -290,7 +288,9 @@ fn main() {
             panic!("[!] Unable to recover the key from our shares?!");
         }
 
+        // Write the shares out to files in the share directory
 
+        // Done!
     }
     else if args.decrypt { // Decryption
         println!("[*] Chose to decrypt a file...");
@@ -300,7 +300,7 @@ fn main() {
         let shares_dir = &paths[1];
 
         // print share dir being used
-        println!("[+] Shares folder: {}", stringify_path(&shares_dir) );
+        println!("[+] Shares directory: {}", stringify_path(&shares_dir) );
 
 
     }
