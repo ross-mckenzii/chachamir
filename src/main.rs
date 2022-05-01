@@ -69,12 +69,14 @@ struct Arguments {
 // ---------
 // constants
 // ---------
-// version
+// package version
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+// algorithm version (used for major changes to enc/dec algo -- added to file headers)
+const ALGO_VERSION: u8 = 1;
 
 // file header prefixes
-const HEADER_FILE: [u8; 4] = [67, 67, 77, 0]; // "CCM[null]"
-const HEADER_SHARE: [u8; 5] = [67, 67, 77, 83, 0]; // "CCMS[null]"
+const HEADER_FILE: [u8; 3] = [67, 67, 77]; // "CCM"
+const HEADER_SHARE: [u8; 4] = [67, 67, 77, 83]; // "CCMS"
 
 // ---------
 // functions
@@ -130,38 +132,62 @@ fn get_paths(cli_args: Arguments) -> [PathBuf; 2] { // Returns the file for encr
     paths
 }
 
+fn fatal_error(error: &io::Error, diagnosis: String) { // Fatal error handling (read: aborting)
+    println!("");
+    eprintln!("[!] {}", &diagnosis);
+    eprintln!("[!] {}", &error.to_string() );
+    println!("");
+    process::exit(1);
+}
+
 fn read_file(filepath: &Path) -> Vec<u8> { // Raw function for reading files
     let mut contents = vec![];
     let open = fs::File::open(&filepath);
 
     let mut open = match open { // handle file open
         Ok(file) => file,
-        Err(error) => panic!("[!] Could not open file {}! | {:?}", filepath.display(), error),
+        Err(error) => { // error out
+            fatal_error(&error, format!("Could not open file {}", filepath.display()) );
+            panic!("");
+        }
     };
 
     let read_result = open.read_to_end(&mut contents);
 
-    let read_result = match read_result { // handle file read
-        Ok(res) => (),
-        Err(error) => panic!("[!] Could not read file {}! | {:?}", filepath.display(), error),
+    match read_result { // handle file read
+        Ok(_res) => (),
+        Err(error) => { // error out
+            fatal_error(&error, format!("Could not read file {}", filepath.display()) );
+            panic!("");
+        }
     };
 
     contents
 }
 
 fn write_file<'a>(filepath: &'a Path, contents: &Vec<u8>) -> &'a Path { // Raw function for writing out files
-    let mut file = fs::File::create(&filepath);
+    let file = fs::File::create(&filepath);
 
     let mut file = match file { // handle file creation
         Ok(res) => res,
-        Err(error) => panic!("[!] Could not create file {}! | {:?}", filepath.display(), error),
+        Err(error) => { // error out
+            eprintln!("[!] Could not create file {}!", filepath.display());
+            eprintln!("[!] {}", error.to_string());
+            println!("");
+            process::exit(1);
+        }
     };
 
     let write_result = file.write_all(&contents);
     
-    let write_result = match write_result { // handle file write
-        Ok(res) => (),
-        Err(error) => panic!("[!] Could not write file {}! | {:?}", filepath.display(), error),
+    match write_result { // handle file write
+        Ok(_res) => (),
+        Err(error) => { // error out
+            eprintln!("[!] Could not write file {}!", filepath.display());
+            eprintln!("[!] {}", error.to_string());
+            println!("");
+            process::exit(1);
+        }
     };
 
     filepath
@@ -177,8 +203,7 @@ fn chacha_encrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, plaintext: &[u8] ) -> Vec<
         .expect("Failure when encrypting file");
     
     // Decrypt the ciphertext to ensure that it works
-    let chk_plaintext = cc20.decrypt(nonce, ciphertext.as_ref())
-    .expect("Failure when verifying ciphertext");
+    let chk_plaintext = chacha_decrypt(u8_key, u8_nonce, ciphertext.as_ref());
 
     if &plaintext == &chk_plaintext { // if everything is good
         ciphertext
@@ -223,6 +248,7 @@ fn main() {
 
     if args.encrypt { // Encryption
         println!("[*] Chose to encrypt a file...");
+        println!("");
         
         // Dirty way of getting Option<u8> -> u8
         let player_cnt = match args.players {
@@ -261,7 +287,7 @@ fn main() {
         println!("[-] Key generated");
 
         // Generate 86-bit nonce (also used to ID files)
-        let mut nonce = [0u8; 32];
+        let mut nonce = [0u8; 12];
         OsRng.fill_bytes(&mut nonce);
         println!("[-] Nonce generated");
 
@@ -288,12 +314,74 @@ fn main() {
             panic!("[!] Unable to recover the key from our shares?!");
         }
 
-        // Write the shares out to files in the share directory
+        println!("[-] Share recovery succeeded");
+
+        // Save shares to folder
+        println!("");
+        // --- Construct share header(s)
+        // header "CCMS"
+        let mut share_header: Vec<u8> = HEADER_SHARE.to_vec(); 
+        // algorithm version
+        share_header.push(ALGO_VERSION);
+        // nonce
+        share_header.extend(&nonce);
+
+        let mut share_i = 1;
+        for s in shares {
+            println!("[&] Writing share # {}...", share_i);
+            // we do not include the share number or totals as that is encoded within the share data itself,
+            // so just push the universal header and the share data
+
+            let mut this_share_path = PathBuf::from(&shares_dir);
+
+            let share_filename: String = share_i.to_string() 
+            + "-" 
+            + &hex_nonce;
+
+            this_share_path.set_file_name(share_filename);
+            this_share_path.set_extension("ccms");
+
+            write_file(&this_share_path, &s);
+            share_i += 1;
+        };
+        // Done with share stuff
+
+        // Encrypt file
+        let file_plaintext: Vec<u8> = read_file(&target_file);
+        let mut file_encrypted: Vec<u8> = chacha_encrypt(recovered_key, nonce.to_vec(), &file_plaintext);
+
+        // --- Construct encrypted file for saving
+        // header "CCM"
+        let mut enc_file: Vec<u8> = HEADER_FILE.to_vec(); 
+        // algorithm version
+        enc_file.push(ALGO_VERSION);
+        // nonce
+        enc_file.extend(&nonce);
+        // encrypted file contents
+        enc_file.append(&mut file_encrypted);
+
+        // Save to file
+        let mut target_enc_file = PathBuf::from(&target_file);
+
+        match target_enc_file.extension() { // add .ccm extension
+            Some(ext) => {
+                let mut ext = ext.to_os_string();
+                ext.push(".ccm");
+                target_enc_file.set_extension(ext)
+            }
+            None => target_enc_file.set_extension(".ccm"),
+        };
+
+        write_file(&target_enc_file, &enc_file);
+        println!("[&] Encrypted file written to {}", stringify_path(&target_enc_file) );
 
         // Done!
+        println!("");
+        println!("[*] Encryption complete! Have a nice day." );
     }
     else if args.decrypt { // Decryption
         println!("[*] Chose to decrypt a file...");
+        println!("");
 
         let paths = get_paths(args);
         let target_file = &paths[0];
