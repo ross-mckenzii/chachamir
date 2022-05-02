@@ -48,6 +48,13 @@ In the case of ext3 file systems, the above disclaimer applies (and shred is thu
 In addition, file system backups and remote mirrors may contain copies of the file that cannot be removed, and that will allow a shredded file to be recovered later. 
 ```
 
+## Known Issues
+
+* There is currently no protection against malicious share holders modifying their shares to modify the retrieved secret.
+* Likewise, there is currently no protection against corruption of shares.
+
+These could be mitigated by adding a signature to both shares and files, allowing both share holders and the file holder to verify that neither the file nor shares have been tampered with. This is a planned feature of ChaChaMir for some point in the future.
+
 ## Licenses
 
 Please see `LICENSE` and `COPYING.md` for licenses.

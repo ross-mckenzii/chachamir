@@ -7,6 +7,7 @@ extern crate chacha20poly1305; // chacha20 implementation
 extern crate clap; // clap (CLI parser)
 extern crate glob; // glob (for handling file directories)
 extern crate hex; // Hex stuff (for using nonces as IDs)
+extern crate infer; // MIME type recognition (not really necessary, just for post-decryption fun)
 extern crate path_clean; // Path clean (for absolute paths)
 extern crate rand; // RNG (for key generation)
 extern crate sharks; // Shamir's Secret Sharing
@@ -41,7 +42,7 @@ use sharks::{ Sharks, Share };
 // -------
 
 #[derive(Parser)]
-#[clap(version, about)]
+#[clap(version, author, about)]
 /// Encrypts and decrypts files using ChaCha20 and Shamir's Secret Sharing
 struct Arguments {
     /// Choose to encrypt or decrypt file
@@ -83,9 +84,10 @@ enum Commands {
     }
 }
 
-// ---------
-// constants
-// ---------
+/*----------+
+| constants |
+-----------*/
+
 // package version
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 // algorithm version (used for major changes to enc/dec algo -- added to file headers)
@@ -95,21 +97,42 @@ const KEY_LENGTH_BYTES: usize = 32;
 // nonce length in bytes
 const NONCE_LENGTH_BYTES: usize = 12;
 
-// file header prefixes
+struct ShareFromFile { // struct for storing info we retrieve from a share file
+    threshold: u8,
+    share_data: Share
+}
+
+/*-----------------+
+| file header crap |
+-------------------*/
 const HEADER_FILE: [u8; 3] = [67, 67, 77]; // "CCM"
 const HEADER_SHARE: [u8; 4] = [67, 67, 77, 83]; // "CCMS"
 
 // number of bytes before nonce in header(s)
-const HEADER_PRE_NONCE_BYTES_FILE: usize = 4;
-const HEADER_PRE_NONCE_BYTES_SHARE: usize = 5;
+const HEADER_PRE_NONCE_BYTES_FILE: usize = 5;
+const HEADER_PRE_NONCE_BYTES_SHARE: usize = 6;
+
+/* FILE HEADER STRUCTURE
+Both file headers are 17 bytes with 1 byte of padding to make an even number (18; leaves a byte of expansion if needed in the future)
+
+Files
+67 67 77 VV TT NN NN NN NN NN NN NN NN NN NN NN NN 00 ...
+
+Shares
+67 67 77 83 VV TT NN NN NN NN NN NN NN NN NN NN NN NN ...
+
+VV = version
+TT = threshold
+NN = nonce bytes
+*/
 
 // number of bytes total in header(s)
-const HEADER_LENGTH_FILE: usize = 16;
-const HEADER_LENGTH_SHARE: usize = 17;
+const HEADER_LENGTH_FILE: usize = HEADER_FILE.len() + 1 + 1 + NONCE_LENGTH_BYTES + 1; // 18
+const HEADER_LENGTH_SHARE: usize = HEADER_SHARE.len() + 1 + 1 + NONCE_LENGTH_BYTES; // 18
 
-// ---------
-// functions
-// ---------
+/*----------+
+| functions |
+-----------*/
 
 fn absolute_path(path: impl AsRef<Path>) -> Result<PathBuf> { // absolute path code knicked from SO
     let path = path.as_ref();
@@ -121,6 +144,13 @@ fn absolute_path(path: impl AsRef<Path>) -> Result<PathBuf> { // absolute path c
     }.clean();
 
     Ok(absolute)
+}
+
+fn strip_newline(input: &str) -> &str { // trailing newline stripper (also knicked from SO)
+    input
+        .strip_suffix("\r\n")
+        .or(input.strip_suffix("\n"))
+        .unwrap_or(input)
 }
 
 fn stringify_path(path: &PathBuf) -> String { // turn path into string for printing
@@ -138,7 +168,7 @@ fn get_paths(share_dir: Option<PathBuf>, target_file: PathBuf) -> [PathBuf; 2] {
             println!("[+] Shares directory not provided... using current working directory");
             let default_dir = env::current_dir().unwrap();
 
-            println!("");
+            nl();
             println!("[#] Would you like to continue,");
             println!("[#] using {} as the share directory?", stringify_path(&default_dir) );
             println!("[#] (Ctrl+C to abort; provide path to use that instead; empty for default)");
@@ -159,22 +189,31 @@ fn get_paths(share_dir: Option<PathBuf>, target_file: PathBuf) -> [PathBuf; 2] {
     paths
 }
 
-fn fatal_error(error: &io::Error, diagnosis: String) { // Fatal error handling (read: aborting)
+fn nl(){ // Newline
     println!("");
+}
+
+fn enl(){ // Newline to stderr
+    eprintln!("");
+}
+
+fn fatal_error(error: &io::Error, diagnosis: String) { // Fatal error handling (read: aborting)
+    nl();
     eprintln!("[!] {}", &diagnosis);
     eprintln!("[!] {}", &error.to_string() );
-    println!("");
+    nl();
     process::exit(1);
 }
 
-fn share_from_file(file: &Path, nonce: &Vec<u8>) -> Result<Share> { // Pull shares back out of share files
+fn share_from_file(file: &Path, nonce: &Vec<u8>) -> Result<ShareFromFile> { // Pull shares back out of share files
     let mut share_header = read_file(&file);
 
     if share_header.len() < HEADER_LENGTH_SHARE { // this is clearly not a share and we will panic if we try to slice < header bytes
         return Err( Error::new( ErrorKind::Other, "Invalid share (file smaller than CCMS header)" ) )
     }
 
-    let share_nonce = (&share_header[HEADER_PRE_NONCE_BYTES_SHARE..HEADER_LENGTH_SHARE]).to_vec(); // get share's nonce
+    let share_nonce = (&share_header[HEADER_PRE_NONCE_BYTES_SHARE..(HEADER_PRE_NONCE_BYTES_SHARE + NONCE_LENGTH_BYTES)]).to_vec(); // get share's nonce
+    let share_threshold = share_header[HEADER_SHARE.len() + 1]; // threshold, according to this share
     let share_contents: Vec<u8> = share_header.split_off(HEADER_LENGTH_SHARE); // Grab first 18 bytes of the share
     
     if share_header[0..(HEADER_SHARE.len())] != HEADER_SHARE { // share is missing header
@@ -185,7 +224,14 @@ fn share_from_file(file: &Path, nonce: &Vec<u8>) -> Result<Share> { // Pull shar
         let found_share = Share::try_from(share_contents.as_slice());
         
         match found_share { // Share::try_from returns a borrowed string when it errors for some reason so we have to handle that
-            Ok(sh) => Ok(sh),
+            Ok(sh) => {
+                let share_tuple = ShareFromFile {
+                    threshold: share_threshold,
+                    share_data: sh
+                };
+
+                Ok(share_tuple)
+            },
             Err(err_string) => Err( Error::new( ErrorKind::Other, err_string ) )
         }
     }
@@ -198,9 +244,6 @@ fn is_encrypted(file: &Vec<u8>) -> Result<Vec<u8>> { // checks if the target fil
     if file.len() < HEADER_LENGTH_FILE { // this is clearly not a CCM file and we will panic if we try to slice < header bytes
         return Err( Error::new( ErrorKind::Other, "File not encrypted (smaller than CCM header)" ) )
     }
-
-    println!("{:?}", file[0..HEADER_FILE.len()].to_vec());
-    println!("{:?}", HEADER_FILE);
 
     if file[0..HEADER_FILE.len()].to_vec() != HEADER_FILE { // file is missing header
         return Err( Error::new( ErrorKind::Other, "File not encrypted (CCM header missing)" ) )
@@ -242,7 +285,7 @@ fn write_file<'a>(filepath: &'a Path, contents: &Vec<u8>) -> &'a Path { // Raw f
         Err(error) => { // error out
             eprintln!("[!] Could not create file {}!", filepath.display());
             eprintln!("[!] {}", error.to_string());
-            println!("");
+            nl();
             process::exit(1);
         }
     };
@@ -254,7 +297,7 @@ fn write_file<'a>(filepath: &'a Path, contents: &Vec<u8>) -> &'a Path { // Raw f
         Err(error) => { // error out
             eprintln!("[!] Could not write file {}!", filepath.display());
             eprintln!("[!] {}", error.to_string());
-            println!("");
+            nl();
             process::exit(1);
         }
     };
@@ -306,10 +349,12 @@ fn logo(){ // prints CCM logo
     println!(" \\___)\\_)(_/\\_/\\_/ \\___)\\_)(_/\\_/\\_/\\_)(_/(__)(__\\_)");
     println!("----");
     println!("version {}", VERSION);
-    println!("");
+    nl();
 }
 
-// ---------
+/*----------+
+|   main    |
+-----------*/
 
 fn main() {
     let args = Arguments::parse();
@@ -318,7 +363,7 @@ fn main() {
     match args.command { // which command are we running?
         Commands::Encrypt { ref file, players, threshold, share_dir } => { // Encryption
             println!("[*] Chose to encrypt a file...");
-            println!("");
+            nl();
 
             // Take ownership of args
             let players = players.to_owned();
@@ -382,18 +427,18 @@ fn main() {
             let file_plaintext: Vec<u8> = read_file(&target_file);
 
             // Save shares to folder
-            println!("");
+            nl();
             // --- Construct share header(s)
             // header "CCMS"
             let mut share_header: Vec<u8> = HEADER_SHARE.to_vec(); 
             // algorithm version
             share_header.push(ALGO_VERSION);
+            // threshold
+            share_header.push(threshold);
             // nonce
             share_header.extend(&nonce);
-            // padding byte
-            share_header.push(0);
 
-            let mut share_i: u8 = 1;
+            let mut share_i: i32 = 1;
             for s in shares {
                 println!("[&] Writing share # {}...", share_i);
                 // we do not include the share number or totals as that is encoded within the share data itself,
@@ -405,7 +450,7 @@ fn main() {
                 + "-" 
                 + &hex_nonce;
 
-                this_share_path.set_file_name(share_filename);
+                this_share_path.push(share_filename);
                 this_share_path.set_extension("ccms");
 
                 let share_full: Vec<u8> = share_header.iter().cloned().chain(s).collect();
@@ -414,6 +459,7 @@ fn main() {
                 share_i += 1;
             };
             // Done with share stuff
+            nl();
 
             // Encrypt file
             let mut file_encrypted: Vec<u8> = chacha_encrypt(recovered_key, nonce.to_vec(), &file_plaintext);
@@ -423,8 +469,13 @@ fn main() {
             let mut enc_file: Vec<u8> = HEADER_FILE.to_vec(); 
             // algorithm version
             enc_file.push(ALGO_VERSION);
+            // threshold
+            enc_file.push(threshold);
             // nonce
             enc_file.extend(&nonce);
+            // padding byte
+            enc_file.push(0);
+
             // encrypted file contents
             enc_file.append(&mut file_encrypted);
 
@@ -444,13 +495,13 @@ fn main() {
             println!("[&] Encrypted file written to {}", stringify_path(&target_enc_file) );
 
             // Done!
-            println!("");
+            nl();
             println!("[*] Encryption complete! Have a nice day." );
         },
 
         Commands::Decrypt { ref file, all, share_dir } => { // Decryption
             println!("[*] Chose to decrypt a file...");
-            println!("");
+            nl();
 
             let paths = get_paths(share_dir, file.to_owned() );
             let target_file = &paths[0];
@@ -459,8 +510,9 @@ fn main() {
             // print share dir being used
             println!("[+] Shares directory: {}", stringify_path(&shares_dir) );
 
-            // Process target file
-            let (target_header, nonce, file_contents) = {
+
+            nl();
+            let (target_algo_version, mut threshold, nonce, file_contents) = { // Process target file
                 let mut target_file: Vec<u8> = read_file(&target_file);
 
                 let target_header = match is_encrypted(&target_file) { // exit if file is not encrypted
@@ -471,14 +523,19 @@ fn main() {
                     }
                 };
 
-                let nonce: Vec<u8> = (&target_header[HEADER_PRE_NONCE_BYTES_FILE..HEADER_LENGTH_FILE]).to_vec(); // Nonce
+                let file_algo_version: u8 = target_header[HEADER_FILE.len()]; // Algorithm version
+                let file_threshold: u8 = target_header[HEADER_FILE.len() + 1]; // Threshold
+                let file_nonce: Vec<u8> = (&target_header[HEADER_PRE_NONCE_BYTES_FILE..(HEADER_PRE_NONCE_BYTES_FILE + NONCE_LENGTH_BYTES)]).to_vec(); // Nonce
                 let file_contents: Vec<u8> = target_file.split_off(HEADER_LENGTH_FILE); // Separate contents from header
 
-                (target_header, nonce, file_contents)
+                (file_algo_version, file_threshold, file_nonce, file_contents)
             };
 
-            println!("[+] Target file is encrypted; algorithm version {}", target_header[HEADER_FILE.len()].to_string() );
+            println!("[+] Target file is encrypted; algorithm version {}", target_algo_version.to_string() );
+            println!("[+] {} shares needed to decrypt", threshold.to_string() );
             println!("[+] Target file nonce: {}", hex::encode(&nonce) );
+
+            nl();
 
             // Gather shares
             let mut shares: Vec<Share> = Vec::new();
@@ -491,15 +548,54 @@ fn main() {
                 glob_pattern = stringify_path(&shares_dir).to_owned() + "*.ccms"; 
             } 
             
-            for file in glob(&glob_pattern).expect("[!] Failed to read share file directory. Is it invalid?") {
+            // horrible nesting incoming
+            for file in glob(&glob_pattern).expect("[!] Failed to read share file directory. Is it invalid?") { // Push shares to vector
                 match file {
                     Ok(path) => {
                         let share_f = share_from_file(&path, &nonce);
 
-                        match share_f {
+                        match share_f { // did the share grab fail?
                             Ok(shf) => {
                                 println!("[%] Share retrieved from {}", &path.display());
-                                shares.push(shf);
+
+                                if shf.threshold != threshold { // threshold mismatch (either the file or share has been tampered with)
+                                    enl();
+                                    eprintln!("[#] Threshold mismatch from share {}", &path.display());
+                                    eprintln!("[#] File:  {}", threshold.to_string() );
+                                    eprintln!("[#] Share: {}", shf.threshold.to_string() );
+                                    enl();
+                                    eprintln!("[#] Would you like to continue?");
+                                    eprintln!("[#] If so, which threshold should we use?" );
+                                    eprintln!("[#] (Ctrl+C to abort; provide threshold to use instead; empty for file's threshold)");
+
+                                    // Wait for user confirmation
+                                    let mut confirm = String::new();
+                                    io::stdin().read_line(&mut confirm).expect("[!] Critical error with input");
+
+                                    let confirm: &str = strip_newline(&confirm[..]);
+
+                                    if confirm.is_empty() {
+                                        eprintln!("[#] Okay. Continuing...");
+                                    } else {
+                                        let confirm = confirm.parse::<u8>();
+
+                                        match confirm {
+                                            Ok(number) => {
+                                                threshold = number;
+                                                eprintln!("[#] Using threshold of {} -- this might fail!", threshold.to_string() );
+                                            },
+                                            Err(err) => {
+                                                eprintln!("[!] That's not a threshold number");
+                                                eprintln!("[!] {}", err.to_string() );
+                                                eprintln!("[!] Aborting...");
+                                                process::exit(1);
+                                            }
+                                        };
+
+                                    }
+                                }
+
+                                shares.push(shf.share_data);
                             },
                             Err(err) => eprintln!("[^] Skipping {} | {}", &path.display(), &err.to_string() )
                         }
@@ -510,17 +606,61 @@ fn main() {
                 }
             }
 
+            nl();
+
             // Attempt to recover key from shares
             println!("[-] Attempting key recovery with {} share(s)...", &shares.len() );
 
-            let sharks = Sharks(3);
-            let recovered_key = sharks.recover(&shares);
+            let sss = Sharks(threshold);
+            let recovered_key = match sss.recover(&shares) {
+                Ok(key) => {
+                    println!("[%] Recovery successful!");
+                    key
+                },
+                Err(sss_err) => {
+                    fatal_error( &Error::new(ErrorKind::Other, sss_err), "Could not recover the key from your shares!".to_string() );
+                    process::exit(1);
+                }
+            };
 
-            println!("{:?}", recovered_key);
+            nl();
 
             // Decrypt file
+            let file_plaintext: Vec<u8> = chacha_decrypt(recovered_key, nonce.to_vec(), &file_contents);
+
+            match infer::get(&file_plaintext){
+                Some(mimetype) => {
+                    println!("[-] File decrypted -- MIME type: {}", mimetype.mime_type() );
+                },
+                None => {
+                    println!("[-] File decrypted -- MIME type: unknown (text? binary?)");
+                }
+            };
+
+            nl();
+
+            // Write out file
+            let mut decrypted_path = PathBuf::from(target_file);
+
+            let decrypted_path = match decrypted_path.extension() { // remove .ccm extension
+                Some(ext) => {
+                    if ext.to_str().unwrap() == "ccm" {
+                        decrypted_path.set_extension("");
+                        decrypted_path
+                    }
+                    else {
+                        decrypted_path
+                    }
+                },
+                None => decrypted_path,
+            };
+
+            write_file(Path::new(&decrypted_path), &file_plaintext);
+            println!("[&] Decrypted file written to {}", stringify_path( &PathBuf::from(&decrypted_path) ) );
 
             // Done!
+            nl();
+            println!("[*] Decryption complete! Have a nice day." );
         }
     }
 
