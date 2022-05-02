@@ -5,6 +5,7 @@
 
 extern crate chacha20poly1305; // chacha20 implementation
 extern crate clap; // clap (CLI parser)
+extern crate glob; // glob (for handling file directories)
 extern crate hex; // Hex stuff (for using nonces as IDs)
 extern crate path_clean; // Path clean (for absolute paths)
 extern crate rand; // RNG (for key generation)
@@ -14,7 +15,8 @@ extern crate sharks; // Shamir's Secret Sharing
 use std::env;
 use std::fs;
 use std::io;
-use std::io::prelude::*;
+use std::io::{Result, Error, ErrorKind};
+use std::io::{Read, Write};
 use std::path::{PathBuf, Path};
 use std::process;
 use std::str;
@@ -24,6 +26,8 @@ use chacha20poly1305::aead::{Aead, NewAead};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
 use clap::Parser;
+
+use glob::glob;
 
 use path_clean::PathClean;
 
@@ -78,11 +82,15 @@ const ALGO_VERSION: u8 = 1;
 const HEADER_FILE: [u8; 3] = [67, 67, 77]; // "CCM"
 const HEADER_SHARE: [u8; 4] = [67, 67, 77, 83]; // "CCMS"
 
+// number of bytes before nonce in header
+const HEADER_PRE_NONCE_BYTES_FILE: usize = 4;
+const HEADER_PRE_NONCE_BYTES_SHARE: usize = 5;
+
 // ---------
 // functions
 // ---------
 
-fn absolute_path(path: impl AsRef<Path>) -> io::Result<PathBuf> { // absolute path code knicked from SO
+fn absolute_path(path: impl AsRef<Path>) -> Result<PathBuf> { // absolute path code knicked from SO
     let path = path.as_ref();
 
     let absolute = if path.is_absolute() {
@@ -138,6 +146,24 @@ fn fatal_error(error: &io::Error, diagnosis: String) { // Fatal error handling (
     eprintln!("[!] {}", &error.to_string() );
     println!("");
     process::exit(1);
+}
+
+fn share_from_file(file: &Path, nonce: &Vec<u8>) -> Result<Share> { // Pull shares back out of share files
+    let mut s_header = read_file(&file);
+
+    let file_contents: Vec<u8> = s_header.split_off(17); // Grab first 18 bytes of the share
+
+    if &s_header.split_off(HEADER_PRE_NONCE_BYTES_SHARE) == nonce { // compare share nonce to file
+        let found_share = Share::try_from(file_contents.as_slice());
+        
+        match found_share { // Share::try_from returns a borrowed string when it errors for some reason so we have to handle that
+            Ok(sh) => Ok(sh),
+            Err(err_string) => Err( Error::new( ErrorKind::Other, err_string ) )
+        }
+    }
+    else {
+        Err( Error::new( ErrorKind::Other, "Invalid share" ) )
+    }
 }
 
 fn read_file(filepath: &Path) -> Vec<u8> { // Raw function for reading files
@@ -316,6 +342,9 @@ fn main() {
 
         println!("[-] Share recovery succeeded");
 
+        // read plaintext file to make sure we aren't saving useless shares if this fails
+        let file_plaintext: Vec<u8> = read_file(&target_file);
+
         // Save shares to folder
         println!("");
         // --- Construct share header(s)
@@ -325,8 +354,10 @@ fn main() {
         share_header.push(ALGO_VERSION);
         // nonce
         share_header.extend(&nonce);
+        // padding byte
+        share_header.push(0);
 
-        let mut share_i = 1;
+        let mut share_i: u8 = 1;
         for s in shares {
             println!("[&] Writing share # {}...", share_i);
             // we do not include the share number or totals as that is encoded within the share data itself,
@@ -341,13 +372,14 @@ fn main() {
             this_share_path.set_file_name(share_filename);
             this_share_path.set_extension("ccms");
 
-            write_file(&this_share_path, &s);
+            let share_full: Vec<u8> = share_header.iter().cloned().chain(s).collect();
+
+            write_file(&this_share_path, &share_full);
             share_i += 1;
         };
         // Done with share stuff
 
         // Encrypt file
-        let file_plaintext: Vec<u8> = read_file(&target_file);
         let mut file_encrypted: Vec<u8> = chacha_encrypt(recovered_key, nonce.to_vec(), &file_plaintext);
 
         // --- Construct encrypted file for saving
@@ -390,7 +422,42 @@ fn main() {
         // print share dir being used
         println!("[+] Shares directory: {}", stringify_path(&shares_dir) );
 
+        // Get nonce from target file
+        // TODO
+        let nonce = hex::decode("60812b6dd62469008e4dde5d").unwrap();
 
+        // Gather shares
+        let mut shares: Vec<Share> = Vec::new();
+        let glob_pattern = stringify_path(&shares_dir).to_owned() + "*.ccms"; 
+        
+        for file in glob(&glob_pattern).expect("[!] Failed to read share file directory. Is it invalid?") {
+            match file {
+                Ok(path) => {
+                    let share_f = share_from_file(&path, &nonce);
+
+                    match share_f {
+                        Ok(shf) => {
+                            println!("[%] Share retrieved from {}", &path.display());
+                            shares.push(shf);
+                        },
+                        Err(err) => eprintln!("[^] Skipping {} | {}", &path.display(), &err.to_string() )
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[^] Reading something in share directory failed | {}", &e.to_string() );
+                },
+            }
+        }
+
+        // Attempt to recover key from shares
+
+        
+
+        // Decrypt file
+
+        // Done!
+
+        
     }
 
     process::exit(0);
