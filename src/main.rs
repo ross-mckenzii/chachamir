@@ -1,10 +1,10 @@
 // ---------
 // deps & crates
 // ---------
-// all crates are confirmed to be compatible with MIT
 
 extern crate chacha20poly1305; // chacha20 implementation
 extern crate clap; // clap (CLI parser)
+extern crate ed25519_dalek; // ed25519 (share integrity)
 extern crate glob; // glob (for handling file directories)
 extern crate hex; // Hex stuff (for using nonces as IDs)
 extern crate infer; // MIME type recognition (not really necessary, just for post-decryption fun)
@@ -48,6 +48,8 @@ struct Arguments {
     /// Choose to encrypt or decrypt file
     #[clap(subcommand)]
     command: Commands,
+
+    
 }
 
 #[derive(Subcommand)]
@@ -81,7 +83,9 @@ enum Commands {
         /// Path to the directory containing shares, or to write shares to (defaults to current working dir)
         #[clap(parse(from_os_str), short, long)]
         share_dir: Option<PathBuf>,
-    }
+    },
+    /// Print license information
+    Licenses {},
 }
 
 /*----------+
@@ -357,6 +361,23 @@ fn main() {
     logo(); // print logo
 
     match args.command { // which command are we running?
+        
+        Commands::Licenses {} => { // Print license info
+            let ccm_license = include_str!("../LICENSE");
+            let licenses = include_str!("../COPYING.md");
+            
+            print!("{}",ccm_license);
+            nl();
+            println!("---");
+            println!("Dependency licenses");
+            println!("---");
+            nl();
+            print!("{}",licenses);
+            nl();
+            //println!("---");
+            //nl();
+        },
+
         Commands::Encrypt { ref file, players, threshold, share_dir } => { // Encryption
             println!("[*] Chose to encrypt a file...");
             nl();

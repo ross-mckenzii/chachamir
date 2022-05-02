@@ -15,6 +15,7 @@ sharks = "0.4"
 hex = "0.4.3"
 glob = "0.3.0"
 infer = "0.3"
+ed25519-dalek = "1.0.1"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
