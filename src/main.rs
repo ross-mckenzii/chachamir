@@ -283,10 +283,8 @@ fn write_file<'a>(filepath: &'a Path, contents: &Vec<u8>) -> &'a Path { // Raw f
     let mut file = match file { // handle file creation
         Ok(res) => res,
         Err(error) => { // error out
-            eprintln!("[!] Could not create file {}!", filepath.display());
-            eprintln!("[!] {}", error.to_string());
-            nl();
-            process::exit(1);
+            fatal_error(&error, format!("Could not create file {}", filepath.display()) );
+            panic!("");
         }
     };
 
@@ -295,10 +293,8 @@ fn write_file<'a>(filepath: &'a Path, contents: &Vec<u8>) -> &'a Path { // Raw f
     match write_result { // handle file write
         Ok(_res) => (),
         Err(error) => { // error out
-            eprintln!("[!] Could not write file {}!", filepath.display());
-            eprintln!("[!] {}", error.to_string());
-            nl();
-            process::exit(1);
+            fatal_error(&error, format!("Could not write file {}", filepath.display()) );
+            panic!("");
         }
     };
 
