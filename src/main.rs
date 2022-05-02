@@ -177,7 +177,7 @@ fn share_from_file(file: &Path, nonce: &Vec<u8>) -> Result<Share> { // Pull shar
     let share_nonce = (&share_header[HEADER_PRE_NONCE_BYTES_SHARE..HEADER_LENGTH_SHARE]).to_vec(); // get share's nonce
     let share_contents: Vec<u8> = share_header.split_off(HEADER_LENGTH_SHARE); // Grab first 18 bytes of the share
     
-    if share_header[0..4] != HEADER_SHARE { // share is missing header
+    if share_header[0..(HEADER_SHARE.len() - 1)] != HEADER_SHARE { // share is missing header
         return Err( Error::new( ErrorKind::Other, "Invalid share (CCMS header missing)" ) )
     }
 
@@ -192,6 +192,18 @@ fn share_from_file(file: &Path, nonce: &Vec<u8>) -> Result<Share> { // Pull shar
     else {
         Err( Error::new( ErrorKind::Other, "Share does not match target file nonce" ) )
     }
+}
+
+fn is_encrypted(file: &Vec<u8>) -> Result<Vec<u8>> { // checks if the target file is encrypted; returns header if it is
+    if file.len() < HEADER_LENGTH_FILE { // this is clearly not a CCM file and we will panic if we try to slice < header bytes
+        return Err( Error::new( ErrorKind::Other, "File not encrypted (smaller than CCM header)" ) )
+    }
+
+    if file[0..(HEADER_FILE.len() - 1)] != HEADER_FILE { // file is missing header
+        return Err( Error::new( ErrorKind::Other, "File not encrypted (CCM header missing)" ) )
+    }
+
+    Ok( file[0..(HEADER_FILE.len() - 1)].to_vec() ) // Returns header if successful
 }
 
 fn read_file(filepath: &Path) -> Vec<u8> { // Raw function for reading files
@@ -438,18 +450,25 @@ fn main() {
             println!("");
 
             let paths = get_paths(share_dir, file.to_owned() );
-            let target_file = &paths[0];
+            let mut target_file = &paths[0];
             let shares_dir = &paths[1];
 
             // print share dir being used
             println!("[+] Shares directory: {}", stringify_path(&shares_dir) );
 
-            // Get nonce from target file
-            // TODO
-            let mut target_header: Vec<u8> = read_file(&target_file);
+            // Process target file
+            let mut target_file: Vec<u8> = read_file(&target_file);
 
-            let nonce: Vec<u8> = (&target_header[HEADER_PRE_NONCE_BYTES_FILE..HEADER_LENGTH_FILE]).to_vec(); // gets the nonce
-            let file_contents: Vec<u8> = target_header.split_off(HEADER_LENGTH_FILE); // Separate contents from header
+            let target_header = match is_encrypted(&target_file) { // exit if file is not encrypted
+                Ok(head) => head, // extract header if it is
+                Err(err) => { 
+                    println!("[!] Target file failed validation: {}", err.to_string() );
+                    process::exit(1);
+                }
+            };
+
+            let nonce: Vec<u8> = (&target_header[HEADER_PRE_NONCE_BYTES_FILE..HEADER_LENGTH_FILE]).to_vec(); // Nonce
+            let file_contents: Vec<u8> = target_file.split_off(HEADER_LENGTH_FILE); // Separate contents from header
 
             println!("[+] Target file nonce: {}", hex::encode(&nonce) );
 
