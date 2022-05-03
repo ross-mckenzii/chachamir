@@ -936,6 +936,7 @@ fn main() {
             };
 
             nl();
+            println!("[-] Decerypting file...");
 
             // Decrypt file
             let file_plaintext: Vec<u8> = chacha_decrypt(recovered_key, nonce.to_vec(), &file_contents);
