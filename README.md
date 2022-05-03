@@ -8,7 +8,7 @@ ChaCha20-based file encryption tool, utilising Shamir's Secret Sharing to distri
 
 ### Encryption
 
-`chachamir encrypt [OPTIONS] <FILE> <PLAYERS> <THRESHOLD>`
+```chachamir encrypt [OPTIONS] <FILE> <PLAYERS> <THRESHOLD>```
 
 Where `<PLAYERS>` is the total number of shares you wish to create, and `<THRESHOLD>` is the threshold number of shares needed to reconstruct the key.
 
@@ -18,7 +18,7 @@ Where `<PLAYERS>` is the total number of shares you wish to create, and `<THRESH
 
 ### Decryption
 
-`chachamir decrypt [OPTIONS] <FILE>`
+```chachamir decrypt [OPTIONS] <FILE>```
 
 File will be decrypted in the same directory as the encrypted file.
 
@@ -68,3 +68,5 @@ These could be mitigated by adding a signature to both shares and files, allowin
 ## Licenses
 
 Please see `LICENSE` and `COPYING.md` for licenses.
+
+Additionally, `chachamir licenses` will display the software's license and the licenses of all libraries used.
