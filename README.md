@@ -47,6 +47,7 @@ ChaChaMir does not shred the original, unencrypted file (or any shares generated
 ## Known Issues
 
 * The maximum file size ChaChaMir can decrypt is limited by your RAM
+
 The ChaCha20 library used needs to be refactored to use streaming encryption/decryption. Files that are many gigabytes in size will likely fail or crash the program. For now, ChaChaMir should be used to protect other, relatively-small key material (such as keyfiles which protect, for instance, a VeraCrypt container).
 
 ## Licenses
