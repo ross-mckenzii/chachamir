@@ -2,7 +2,7 @@
 
 ![ChaChaMir](https://ross.exposed/img/ccm_w_text.png "ChaChaMir")
 
-ChaCha20-based file encryption tool, utilising Shamir's Secret Sharing to distribute its key.
+ChaCha20-based file encryption tool, utilising Shamir's Secret Sharing to distribute its key. Can optionally use ed25519 signatures to ensure integrity of encrypted files and shares.
 
 ## Usage
 
@@ -60,10 +60,8 @@ In addition, file system backups and remote mirrors may contain copies of the fi
 
 ## Known Issues
 
-* There is currently no protection against malicious share holders modifying their shares to modify the retrieved secret.
-* Likewise, there is currently no protection against corruption of shares.
-
-These could be mitigated by adding a signature to both shares and files, allowing both share holders and the file holder to verify that neither the file nor shares have been tampered with. This is a planned feature of ChaChaMir for some point in the future.
+* The maximum file size ChaChaMir can decrypt is limited by your RAM
+The ChaCha20 library used needs to be refactored to use streaming encryption/decryption. Files many gigabytes in size will likely fail or crash the program.
 
 ## Licenses
 

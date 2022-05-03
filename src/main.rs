@@ -261,17 +261,31 @@ fn share_from_file(file: &Path, nonce: &Vec<u8>) -> Result<ShareFromFile> { // P
                 return Err( Error::new( ErrorKind::Other, "Invalid share (file smaller than signed CCMS header)" ) )
             }
 
-            share_pubkey = Some( 
-                PublicKey::from_bytes(
-                    &share_header[HEADER_LENGTH_SHARE..(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH)]
-                ).unwrap() 
+            let share_pubkey_res = PublicKey::from_bytes(&share_header[HEADER_LENGTH_SHARE..(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH)]);
+
+            share_pubkey = match share_pubkey_res { // check for public key validity (ed25519 will throw if it's garbage)
+                Ok(pk) => Some(pk),
+                Err(error) => {
+                    eprintln!("[^] Bad public key from {}", &file.display() );
+                    eprintln!("[^] {}", error.to_string() );
+
+                    return Err( Error::new( ErrorKind::Other, "Invalid share (bad public key)" ) )
+                }
+            };
+            
+            let share_signature_res = Signature::from_bytes(
+                &share_header[(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH)..(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH)]
             );
 
-            share_signature = Some( 
-                Signature::from_bytes(
-                    &share_header[(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH)..(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH)]
-                ).unwrap() 
-            );
+            share_signature = match share_signature_res { // likewise for signatures
+                Ok(sig) => Some(sig),
+                Err(error) => {
+                    eprintln!("[^] Bad signature from {}", &file.display() );
+                    eprintln!("[^] {}", error.to_string() );
+                    
+                    return Err( Error::new( ErrorKind::Other, "Invalid share (bad signature)" ) )
+                }
+            };
         }
 
         let split_length = match share_is_signed { // change header length depending on if signed or unsigned
@@ -380,7 +394,7 @@ fn chacha_encrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, plaintext: &[u8] ) -> Vec<
         .expect("Failure when encrypting file");
     
     // Decrypt the ciphertext to ensure that it works
-    let chk_plaintext = chacha_decrypt(u8_key, u8_nonce, ciphertext.as_ref());
+    let chk_plaintext = chacha_decrypt(u8_key, u8_nonce, ciphertext.as_ref()).unwrap();
 
     if &plaintext == &chk_plaintext { // if everything is good
         ciphertext
@@ -389,15 +403,19 @@ fn chacha_encrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, plaintext: &[u8] ) -> Vec<
     }
 }
 
-fn chacha_decrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, ciphertext: &[u8] ) -> Vec<u8> { // decrypt ciphertext with chacha20
+fn chacha_decrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, ciphertext: &[u8] ) -> Result<Vec<u8>> { // decrypt ciphertext with chacha20
     let key = Key::from_slice(&u8_key);
     let cc20 = ChaCha20Poly1305::new(key);
 
     let nonce = Nonce::from_slice(&u8_nonce);
     
     // Decrypt the ciphertext
-    let plaintext = cc20.decrypt(nonce, ciphertext)
-    .expect("Failure when decrypting ciphertext");
+    let plaintext = match cc20.decrypt(nonce, ciphertext) {
+        Ok(plain) => Ok(plain),
+        Err(error) => { // aead doesn't use a normal Error to avoid side-channel leaks
+            Err( Error::new( ErrorKind::Other, "[reason obfuscated]" ) )
+        } 
+    };
 
     plaintext
 }
@@ -498,7 +516,7 @@ fn share_signature_verification(
 
         let share_verification = share_pub_key.verify(&reconstructed_share, &share_signature);
 
-        let share_verification = match share_verification {
+        let _share_verification = match share_verification {
             Ok(v) => v,
             Err(error) => { // Share verification failed. Uh oh spaghetti-os
                 enl();
@@ -511,11 +529,11 @@ fn share_signature_verification(
                 eprintln!("[#] -----------------------------------------------------" );
                 eprintln!("[#] WARNING: THIS SHARE MAY BE CORRUPTED OR TAMPERED WITH" );
                 eprintln!("[#]    FILE RECOVERY IS UNLIKELY WHEN USING THIS SHARE   " );
+                eprintln!("[#]   ANY EXISTING FILE MAY BE OVERWRITTEN WITH GARBAGE  " );
                 eprintln!("[#] -----------------------------------------------------" );
                 enl();
                 eprintln!("[#] More information:" );
                 eprintln!("[#] {}", error.to_string() );
-                enl();
                 die_on_strict(strict);
                 stop_user = true;
             }
@@ -523,12 +541,7 @@ fn share_signature_verification(
     }
 
     if stop_user { // stop user if we have to
-        println!("[#] Are you certain you wish to continue?");
-        println!("[#] (Ctrl+C to abort; Enter to continue)");
-
-        // Wait for user confirmation
-        let mut confirm = String::new();
-        io::stdin().read_line(&mut confirm).expect("[!] Critical error with input");
+        ask_to_continue();
     }
 }
 
@@ -550,10 +563,20 @@ fn logo(){ // prints CCM logo
 fn die_on_strict(is_strict: bool){ // Exit the program if a validation issue occurs with shares or files
     if is_strict {
         enl();
-        eprintln!("[!] Will not decrypt using tampered shares in strict mode!");
+        eprintln!("[!] Will not decrypt using tampered data in strict mode!");
         eprintln!("[!] Aborting");
         process::exit(1);
     }
+}
+
+fn ask_to_continue(){ // Ask the user to confirm they wish to proceed (used for strict-killing errors in non-strict mode)
+    eprintln!("");
+    eprintln!("[#] Are you certain you wish to continue?");
+    eprintln!("[#] (Ctrl+C to abort; Enter to continue)");
+
+    // Wait for user confirmation
+    let mut confirm = String::new();
+    io::stdin().read_line(&mut confirm).expect("[!] Critical error with input");
 }
 
 /*----------+
@@ -656,7 +679,7 @@ fn main() {
             nl();
 
             // --- Construct share header
-            let mut share_header: Vec<u8> = construct_header_share(threshold, sign, &Vec::from(nonce));
+            let share_header: Vec<u8> = construct_header_share(threshold, sign, &Vec::from(nonce));
 
             let mut share_i: i32 = 1;
 
@@ -810,19 +833,47 @@ fn main() {
                         process::exit(1);
                     }
         
-                    file_pubkey = Some( 
-                        PublicKey::from_bytes(
-                            &target_header[HEADER_LENGTH_FILE..(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH)]
-                        ).unwrap() 
+                    let file_pubkey_res = PublicKey::from_bytes(
+                        &target_header[HEADER_LENGTH_FILE..(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH)]
                     );
         
-                    file_signature = Some( 
-                        Signature::from_bytes(
-                            &target_header[(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH)..(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH)]
-                        ).unwrap() 
+                    file_pubkey = match file_pubkey_res {
+                        Ok(pk) => Some(pk),
+                        Err(error) => {
+                            eprintln!("[!] Target file has a bad public key" );
+                            eprintln!("[!] {}", error.to_string() );
+                            
+                            file_is_signed = false;
+                            
+                            die_on_strict(strict);
+                            ask_to_continue();
+
+                            None
+                        }
+                    };
+
+                    let file_signature_res = Signature::from_bytes(
+                        &target_header[(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH)..(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH)]
                     );
 
-                    println!("[+] Target file is signed" );
+                    file_signature = match file_signature_res {
+                        Ok(sig) => Some(sig),
+                        Err(error) => {
+                            eprintln!("[!] Target file has a bad signature" );
+                            eprintln!("[!] {}", error.to_string() );
+
+                            file_is_signed = false;
+                            
+                            die_on_strict(strict);
+                            ask_to_continue();
+
+                            None
+                        }
+                    };
+
+                    if file_is_signed {
+                        println!("[+] Target file is signed" );
+                    }
                 }
         
                 let split_length = match file_is_signed { // change header length depending on if signed or unsigned
@@ -901,7 +952,7 @@ fn main() {
                                     }
                                 }
 
-                                if is_signed || shf.is_signed { // file is signed, therefore more checks!
+                                if is_signed && shf.is_signed { // file is signed, therefore more checks!
                                     share_signature_verification(is_signed, pub_key, /*signature,*/ &shf, &path, strict);
                                 }
 
@@ -916,7 +967,59 @@ fn main() {
                 }
             }
 
+            if shares.len() < 1 { // No shares to reconstruct the secret with
+                println!("");
+                println!("[!] Zero shares located");
+                println!("[!] Cannot decrypt file with zero shares!");
+                process::exit(1);
+            }
+
             nl();
+
+            if is_signed { // Check file signature
+                let pub_key = pub_key.unwrap();
+                let signature = signature.unwrap();
+
+                // Reconstruct the conditions for the original file's signing
+                // header "CCM"
+                let mut reconstructed_file: Vec<u8> = HEADER_FILE.to_vec(); 
+                // algorithm version
+                reconstructed_file.push(target_algo_version);
+                // threshold
+                reconstructed_file.push(threshold);
+                // file is always signed, using "1"
+                reconstructed_file.push(1);
+                // nonce
+                reconstructed_file.extend(&nonce);
+                // public key
+                reconstructed_file.extend( &pub_key.to_bytes() );
+                // contents
+                reconstructed_file.extend(&file_contents);
+
+                let file_verification = pub_key.verify(&reconstructed_file, &signature);
+
+                let _file_verification = match file_verification {
+                    Ok(v) => v,
+                    Err(error) => { // File verification failed. Uh oh spaghetti-os
+                        enl();
+                        eprintln!("[#] Signing mismatch with encrypted file!");
+                        eprintln!("[#] {}", &file.display());
+                        eprintln!("[#] Signature verification against file's public key failed!");
+                        enl();
+                        eprintln!("[#] File public key:  {}", hex::encode( pub_key.to_bytes() ) );
+                        enl();
+                        eprintln!("[#] -----------------------------------------------------" );
+                        eprintln!("[#] WARNING: THIS FILE MAY BE CORRUPTED OR TAMPERED WITH " );
+                        eprintln!("[#] -----------------------------------------------------" );
+                        enl();
+                        eprintln!("[#] More information:" );
+                        eprintln!("[#] {}", error.to_string() );
+
+                        die_on_strict(strict);
+                        ask_to_continue();
+                    }
+                };
+            }
 
             // Attempt to recover key from shares
             println!("[-] Attempting key recovery with {} share(s)...", &shares.len() );
@@ -937,9 +1040,17 @@ fn main() {
             println!("[-] Decrypting file...");
 
             // Decrypt file
-            let file_plaintext: Vec<u8> = chacha_decrypt(recovered_key, nonce.to_vec(), &file_contents);
+            let file_plaintext: Vec<u8> = match chacha_decrypt(recovered_key, nonce.to_vec(), &file_contents) {
+                Ok(plain) => plain,
+                Err(error) => {
+                    fatal_error(&error, "Failed to decrypt file!".to_string() );
+                    process::exit(1);
+                }
+            };
 
             nl();
+
+            // Try to guess MIME type cuz why not
             match infer::get(&file_plaintext){
                 Some(mimetype) => {
                     println!("[-] File decrypted -- MIME type: {}", mimetype.mime_type() );
