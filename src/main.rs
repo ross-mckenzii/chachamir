@@ -679,11 +679,9 @@ fn main() {
                 if sign { // are we signing shares?
                     share_full.extend(&ed25519_bytes_pub);
 
-                    println!("--------~--------");
-
                     // sign the contents of the header (incl public key) + share content
                     
-                    let share_signable = &mut share_full;
+                    let share_signable = &mut share_full.clone();
                     share_signable.extend(&s);
                     
                     let share_ed25519_signature: Signature = ed25519_keypair.sign( &share_signable[..] );
@@ -941,6 +939,7 @@ fn main() {
             // Decrypt file
             let file_plaintext: Vec<u8> = chacha_decrypt(recovered_key, nonce.to_vec(), &file_contents);
 
+            nl();
             match infer::get(&file_plaintext){
                 Some(mimetype) => {
                     println!("[-] File decrypted -- MIME type: {}", mimetype.mime_type() );
