@@ -28,6 +28,8 @@ use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
 use clap::{Parser, Subcommand};
 
+use ed25519_dalek::{Keypair, Signature, Signer, Verifier, PublicKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
+
 use glob::glob;
 
 use path_clean::PathClean;
@@ -48,8 +50,6 @@ struct Arguments {
     /// Choose to encrypt or decrypt file
     #[clap(subcommand)]
     command: Commands,
-
-    
 }
 
 #[derive(Subcommand)]
@@ -69,6 +69,10 @@ enum Commands {
         /// Path to the directory containing shares, or to write shares to (defaults to current working dir)
         #[clap(parse(from_os_str), short, long)]
         share_dir: Option<PathBuf>,
+
+        /// Choose to sign files and shares for extra integrity (will cause additional overhead)
+        #[clap(long)]
+        sign: bool,
     },
     /// Decrypt file
     Decrypt {
@@ -83,6 +87,10 @@ enum Commands {
         /// Path to the directory containing shares, or to write shares to (defaults to current working dir)
         #[clap(parse(from_os_str), short, long)]
         share_dir: Option<PathBuf>,
+
+        /// Force shares to have valid signatures before use (only works with signed files)
+        #[clap(long)]
+        strict: bool
     },
     /// Print license information
     Licenses {},
@@ -103,7 +111,11 @@ const NONCE_LENGTH_BYTES: usize = 12;
 
 struct ShareFromFile { // struct for storing info we retrieve from a share file
     threshold: u8,
-    share_data: Share
+    is_signed: bool,
+    nonce: Vec<u8>,
+    pub_key: Option<PublicKey>,
+    signature: Option<Signature>,
+    share_data: Share,
 }
 
 /*-----------------+
@@ -113,26 +125,36 @@ const HEADER_FILE: [u8; 3] = [67, 67, 77]; // "CCM"
 const HEADER_SHARE: [u8; 4] = [67, 67, 77, 83]; // "CCMS"
 
 // number of bytes before nonce in header(s)
-const HEADER_PRE_NONCE_BYTES_FILE: usize = 5;
-const HEADER_PRE_NONCE_BYTES_SHARE: usize = 6;
+const HEADER_PRE_NONCE_BYTES_FILE: usize = 6;
+const HEADER_PRE_NONCE_BYTES_SHARE: usize = 7;
+
+// location of the is_signed bool
+const HEADER_IS_SIGNED_BYTE_FILE: usize = 6;
+const HEADER_IS_SIGNED_BYTE_SHARE: usize = 7;
 
 /* FILE HEADER STRUCTURE
-Both file headers are 17 bytes with 1 byte of padding to make an even number (18; leaves a byte of expansion if needed in the future)
 
-Files
-67 67 77 VV TT NN NN NN NN NN NN NN NN NN NN NN NN 00 ...
+Files (18 bytes w/o public key and sig)
+67 67 77 VV TT SS NN NN NN NN NN NN NN NN NN NN NN NN
+(32 byte public key)
+(64 byte signature)
+content
 
-Shares
-67 67 77 83 VV TT NN NN NN NN NN NN NN NN NN NN NN NN ...
+Shares (20 bytes w/o public key and sig)
+67 67 77 83 VV TT SS NN NN NN NN NN NN NN NN NN NN NN NN 00
+(32 byte public key)
+(64 byte signature)
+content
 
 VV = version
 TT = threshold
+SS = is signed?
 NN = nonce bytes
 */
 
-// number of bytes total in header(s)
-const HEADER_LENGTH_FILE: usize = HEADER_FILE.len() + 1 + 1 + NONCE_LENGTH_BYTES + 1; // 18
-const HEADER_LENGTH_SHARE: usize = HEADER_SHARE.len() + 1 + 1 + NONCE_LENGTH_BYTES; // 18
+// number of bytes total in header(s) before the signature or public key
+const HEADER_LENGTH_FILE: usize = HEADER_FILE.len() + 1 + 1 + 1 + NONCE_LENGTH_BYTES; // 18 bytes
+const HEADER_LENGTH_SHARE: usize = HEADER_SHARE.len() + 1 + 1 + 1 + NONCE_LENGTH_BYTES + 1; // 20 bytes
 
 /*----------+
 | functions |
@@ -181,6 +203,8 @@ fn get_paths(share_dir: Option<PathBuf>, target_file: PathBuf) -> [PathBuf; 2] {
             let mut confirm = String::new();
             io::stdin().read_line(&mut confirm).expect("[!] Critical error with input");
             
+            let confirm: &str = strip_newline(&confirm[..]);
+
             if !confirm.is_empty() {
                 PathBuf::from(confirm)
             } else {
@@ -218,20 +242,55 @@ fn share_from_file(file: &Path, nonce: &Vec<u8>) -> Result<ShareFromFile> { // P
 
     let share_nonce = (&share_header[HEADER_PRE_NONCE_BYTES_SHARE..(HEADER_PRE_NONCE_BYTES_SHARE + NONCE_LENGTH_BYTES)]).to_vec(); // get share's nonce
     let share_threshold = share_header[HEADER_SHARE.len() + 1]; // threshold, according to this share
-    let share_contents: Vec<u8> = share_header.split_off(HEADER_LENGTH_SHARE); // Grab first 18 bytes of the share
-    
+    let mut share_is_signed: bool = false; // is this share signed?
+    let mut share_pubkey: Option<PublicKey> = None; // public key
+    let mut share_signature: Option<Signature> = None; // signature
+
     if share_header[0..(HEADER_SHARE.len())] != HEADER_SHARE { // share is missing header
         return Err( Error::new( ErrorKind::Other, "Invalid share (CCMS header missing)" ) )
     }
 
     if &share_nonce == nonce { // compare share nonce to file
+
+        // is this share signed?
+        if share_header[HEADER_IS_SIGNED_BYTE_SHARE - 1] != 0 {
+            share_is_signed = true;
+
+            if share_header.len() < (HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH) { 
+                // this is clearly not a share and we will panic if we try to slice < header bytes
+                return Err( Error::new( ErrorKind::Other, "Invalid share (file smaller than signed CCMS header)" ) )
+            }
+
+            share_pubkey = Some( 
+                PublicKey::from_bytes(
+                    &share_header[HEADER_LENGTH_SHARE..(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH)]
+                ).unwrap() 
+            );
+
+            share_signature = Some( 
+                Signature::from_bytes(
+                    &share_header[(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH)..(HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH)]
+                ).unwrap() 
+            );
+        }
+
+        let split_length = match share_is_signed { // change header length depending on if signed or unsigned
+            false => HEADER_LENGTH_SHARE,
+            true => (HEADER_LENGTH_SHARE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH)
+        };
+
+        let share_contents: Vec<u8> = share_header.split_off(split_length); // Grab the contents from the share
         let found_share = Share::try_from(share_contents.as_slice());
         
         match found_share { // Share::try_from returns a borrowed string when it errors for some reason so we have to handle that
             Ok(sh) => {
                 let share_tuple = ShareFromFile {
                     threshold: share_threshold,
-                    share_data: sh
+                    nonce: share_nonce,
+                    share_data: sh,
+                    is_signed: share_is_signed,
+                    pub_key: share_pubkey,
+                    signature: share_signature,
                 };
 
                 Ok(share_tuple)
@@ -253,7 +312,13 @@ fn is_encrypted(file: &Vec<u8>) -> Result<Vec<u8>> { // checks if the target fil
         return Err( Error::new( ErrorKind::Other, "File not encrypted (CCM header missing)" ) )
     }
 
-    Ok( file[0..HEADER_LENGTH_FILE].to_vec() ) // Returns full header if successful
+    // Returns full header if successful
+    if file[HEADER_IS_SIGNED_BYTE_FILE] != 0 { // signed header
+        Ok( file[0..HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH].to_vec() ) 
+    }
+    else { // unsigned header
+        Ok( file[0..HEADER_LENGTH_FILE].to_vec() ) 
+    }
 }
 
 fn read_file(filepath: &Path) -> Vec<u8> { // Raw function for reading files
@@ -337,6 +402,136 @@ fn chacha_decrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, ciphertext: &[u8] ) -> Vec
     plaintext
 }
 
+fn construct_header_share(threshold: u8, is_signed: bool, nonce: &Vec<u8> ) -> Vec<u8> { // Construct a share header
+    let mut share_header: Vec<u8> = HEADER_SHARE.to_vec(); 
+    // algorithm version
+    share_header.push(ALGO_VERSION);
+    // threshold
+    share_header.push(threshold);
+    // is signed?
+    if is_signed {
+        share_header.push(1);
+    }
+    else {
+        share_header.push(0);
+    }
+
+    // nonce
+    share_header.extend(nonce);
+
+    // padding
+    share_header.push(0);
+
+    return share_header
+}
+
+fn share_signature_verification(
+    is_signed: bool, // whether the FILE is signed
+    pub_key: Option<PublicKey>, // the FILE'S public key
+    //signature: Option<Signature>, // the FILE'S signature
+    shf: &ShareFromFile, // the share retrieved from a file
+    path: &Path, // share path
+
+    strict: bool ){ // verifies signatures between a file and a share
+
+    let mut stop_user: bool = false; // set to true if we need to stop the user about share validity
+
+    let pub_key = pub_key.unwrap();
+    //let signature = signature.unwrap();
+
+    let share_pub_key = match shf.pub_key {
+        Some(pk) => pk,
+        None => { // Share is missing a public key
+            enl();
+            eprintln!("[#] Signing mismatch from share {}", &path.display());
+            eprintln!("[#] Share is missing a public key,");
+            eprintln!("[#] its integrity cannot be verified.");
+
+            die_on_strict(strict);
+            stop_user = true;
+            return
+        }
+    };
+
+    let share_signature = match shf.signature {
+        Some(pk) => pk,
+        None => { // Share is missing a signature
+            enl();
+            eprintln!("[#] Signing mismatch from share {}", &path.display());
+            eprintln!("[#] Share is missing a signature,");
+            eprintln!("[#] its integrity cannot be verified.");
+
+            die_on_strict(strict);
+            stop_user = true;
+            return
+        }
+    };
+
+    if !is_signed && shf.is_signed { // file itself is not signed?
+        enl();
+        eprintln!("[#] Signing mismatch from share {}", &path.display());
+        eprintln!("[#] Encrypted file is not signed,");
+        eprintln!("[#] but this share believes it should be.");
+
+        die_on_strict(strict);
+        stop_user = true;
+    }
+
+    if share_pub_key.to_bytes() != pub_key.to_bytes() { // share and file use differing public keys 
+        enl();
+        eprintln!("[#] Signing mismatch from share {}", &path.display());
+        eprintln!("[#] File and share do not use the same public key!");
+        enl();
+        eprintln!("[#] File public key:  {}", hex::encode( pub_key.to_bytes() ) );
+        eprintln!("[#] Share public key: {}", hex::encode( share_pub_key.to_bytes() ) );
+
+        die_on_strict(strict);
+        stop_user = true;
+    }
+
+    if shf.is_signed { // Verify a share's signature
+        // Reconstruct the conditions for the original share's signing
+        let mut reconstructed_share = construct_header_share(shf.threshold, shf.is_signed, &shf.nonce);
+
+        reconstructed_share.extend( share_pub_key.to_bytes() );
+        reconstructed_share.extend(Vec::from(&shf.share_data) );
+
+        let share_verification = share_pub_key.verify(&reconstructed_share, &share_signature);
+
+        let share_verification = match share_verification {
+            Ok(v) => v,
+            Err(error) => { // Share verification failed. Uh oh spaghetti-os
+                enl();
+                eprintln!("[#] Signing mismatch from share {}", &path.display());
+                eprintln!("[#] Share verification from public key failed!");
+                enl();
+                eprintln!("[#] File public key:  {}", hex::encode( pub_key.to_bytes() ) );
+                eprintln!("[#] Share public key: {}", hex::encode( share_pub_key.to_bytes() ) );
+                enl();
+                eprintln!("[#] -----------------------------------------------------" );
+                eprintln!("[#] WARNING: THIS SHARE MAY BE CORRUPTED OR TAMPERED WITH" );
+                eprintln!("[#]    FILE RECOVERY IS UNLIKELY WHEN USING THIS SHARE   " );
+                eprintln!("[#] -----------------------------------------------------" );
+                enl();
+                eprintln!("[#] More information:" );
+                eprintln!("[#] {}", error.to_string() );
+                enl();
+                die_on_strict(strict);
+                stop_user = true;
+            }
+        };
+    }
+
+    if stop_user { // stop user if we have to
+        println!("[#] Are you certain you wish to continue?");
+        println!("[#] (Ctrl+C to abort; Enter to continue)");
+
+        // Wait for user confirmation
+        let mut confirm = String::new();
+        io::stdin().read_line(&mut confirm).expect("[!] Critical error with input");
+    }
+}
+
 fn logo(){ // prints CCM logo
     //   ___  _  _   __    ___  _  _   __   _  _  __  ____ 
     //  / __)/ )( \ / _\  / __)/ )( \ / _\ ( \/ )(  )(  _ \
@@ -350,6 +545,15 @@ fn logo(){ // prints CCM logo
     println!("----");
     println!("version {}", VERSION);
     nl();
+}
+
+fn die_on_strict(is_strict: bool){ // Exit the program if a validation issue occurs with shares or files
+    if is_strict {
+        enl();
+        eprintln!("[!] Will not decrypt using tampered shares in strict mode!");
+        eprintln!("[!] Aborting");
+        process::exit(1);
+    }
 }
 
 /*----------+
@@ -378,7 +582,7 @@ fn main() {
             //nl();
         },
 
-        Commands::Encrypt { ref file, players, threshold, share_dir } => { // Encryption
+        Commands::Encrypt { ref file, players, threshold, share_dir, sign } => { // Encryption
             println!("[*] Chose to encrypt a file...");
             nl();
 
@@ -417,6 +621,11 @@ fn main() {
 
             let hex_nonce = hex::encode(nonce); // hex representation of the nonce
 
+            // Creating a keypair doesn't cause that much overhead (benchmarked in the millisecond range)
+            let mut ed25519_rng = OsRng{};
+            let ed25519_keypair: Keypair = Keypair::generate( &mut ed25519_rng );
+            let ed25519_bytes_pub: [u8; PUBLIC_KEY_LENGTH] = ed25519_keypair.public.to_bytes();
+
             // Split into shares of the secret
             let sss = Sharks(threshold); // init sharks and set threshold
             let dealer = sss.dealer(&key);
@@ -445,18 +654,13 @@ fn main() {
 
             // Save shares to folder
             nl();
-            // --- Construct share header(s)
-            // header "CCMS"
-            let mut share_header: Vec<u8> = HEADER_SHARE.to_vec(); 
-            // algorithm version
-            share_header.push(ALGO_VERSION);
-            // threshold
-            share_header.push(threshold);
-            // nonce
-            share_header.extend(&nonce);
+
+            // --- Construct share header
+            let mut share_header: Vec<u8> = construct_header_share(threshold, sign, &Vec::from(nonce));
 
             let mut share_i: i32 = 1;
-            for s in shares {
+
+            for s in shares { // iterate through shares
                 println!("[&] Writing share # {}...", share_i);
                 // we do not include the share number or totals as that is encoded within the share data itself,
                 // so just push the universal header and the share data
@@ -470,7 +674,28 @@ fn main() {
                 this_share_path.push(share_filename);
                 this_share_path.set_extension("ccms");
 
-                let share_full: Vec<u8> = share_header.iter().cloned().chain(s).collect();
+                let mut share_full: Vec<u8> = share_header.iter().cloned().collect();
+
+                if sign { // are we signing shares?
+                    share_full.extend(&ed25519_bytes_pub);
+
+                    println!("--------~--------");
+
+                    // sign the contents of the header (incl public key) + share content
+                    
+                    let share_signable = &mut share_full;
+                    share_signable.extend(&s);
+                    
+                    let share_ed25519_signature: Signature = ed25519_keypair.sign( &share_signable[..] );
+                    // then add it to the file in between the header and contents
+
+                    share_full.extend(&share_ed25519_signature.to_bytes() );
+
+                    println!("[-] Signed share # {share_i}");
+                }
+
+                // write share content in
+                let share_full: Vec<u8> = share_full.iter().cloned().chain(s).collect();
 
                 write_file(&this_share_path, &share_full);
                 share_i += 1;
@@ -482,16 +707,44 @@ fn main() {
             let mut file_encrypted: Vec<u8> = chacha_encrypt(recovered_key, nonce.to_vec(), &file_plaintext);
 
             // --- Construct encrypted file for saving
+
             // header "CCM"
             let mut enc_file: Vec<u8> = HEADER_FILE.to_vec(); 
+
             // algorithm version
             enc_file.push(ALGO_VERSION);
+
             // threshold
             enc_file.push(threshold);
+
+            // is signed?
+            if sign {
+                enc_file.push(1);
+            }
+            else {
+                enc_file.push(0);
+            }
+
             // nonce
             enc_file.extend(&nonce);
-            // padding byte
-            enc_file.push(0);
+
+            // ----- signatures ---------------------
+
+            if sign {
+                enc_file.extend( ed25519_bytes_pub );
+
+                let mut enc_file_signable: Vec<u8> = enc_file.clone();
+                enc_file_signable.extend(&file_encrypted);
+
+                let file_ed25519_signature: Signature = ed25519_keypair.sign( &enc_file_signable[..] );
+
+                // add signature
+                enc_file.extend(&file_ed25519_signature.to_bytes() );
+                println!("[-] Signed encrypted file");
+
+            }
+
+            // --------------------------------------
 
             // encrypted file contents
             enc_file.append(&mut file_encrypted);
@@ -516,7 +769,7 @@ fn main() {
             println!("[*] Encryption complete! Have a nice day." );
         },
 
-        Commands::Decrypt { ref file, all, share_dir } => { // Decryption
+        Commands::Decrypt { ref file, all, share_dir, strict } => { // Decryption
             println!("[*] Chose to decrypt a file...");
             nl();
 
@@ -527,9 +780,9 @@ fn main() {
             // print share dir being used
             println!("[+] Shares directory: {}", stringify_path(&shares_dir) );
 
-
             nl();
-            let (target_algo_version, mut threshold, nonce, file_contents) = { // Process target file
+
+            let (target_algo_version, mut threshold, is_signed, nonce, pub_key, signature, file_contents) = { // Process target file
                 let mut target_file: Vec<u8> = read_file(&target_file);
 
                 let target_header = match is_encrypted(&target_file) { // exit if file is not encrypted
@@ -543,12 +796,50 @@ fn main() {
                 let file_algo_version: u8 = target_header[HEADER_FILE.len()]; // Algorithm version
                 let file_threshold: u8 = target_header[HEADER_FILE.len() + 1]; // Threshold
                 let file_nonce: Vec<u8> = (&target_header[HEADER_PRE_NONCE_BYTES_FILE..(HEADER_PRE_NONCE_BYTES_FILE + NONCE_LENGTH_BYTES)]).to_vec(); // Nonce
-                let file_contents: Vec<u8> = target_file.split_off(HEADER_LENGTH_FILE); // Separate contents from header
 
-                (file_algo_version, file_threshold, file_nonce, file_contents)
+                let file_is_signed_u8 = target_file[HEADER_IS_SIGNED_BYTE_FILE - 1]; // is the file signed?
+                let mut file_is_signed: bool = false;
+
+                let mut file_pubkey: Option<PublicKey> = None; // public key, if it exists
+                let mut file_signature: Option<Signature> = None; // signature, if it exists
+                
+                if file_is_signed_u8 != 0 { // Retrieve public key and signature from file
+                    file_is_signed = true;
+
+                    if target_file.len() < (HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH) { 
+                        // this is clearly too small and we'll panic if we split on less than this
+                        println!("[!] Target file failed validation: smaller than signed CCM header" );
+                        process::exit(1);
+                    }
+        
+                    file_pubkey = Some( 
+                        PublicKey::from_bytes(
+                            &target_header[HEADER_LENGTH_FILE..(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH)]
+                        ).unwrap() 
+                    );
+        
+                    file_signature = Some( 
+                        Signature::from_bytes(
+                            &target_header[(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH)..(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH)]
+                        ).unwrap() 
+                    );
+
+                    println!("[+] Target file is signed" );
+                }
+        
+                let split_length = match file_is_signed { // change header length depending on if signed or unsigned
+                    false => HEADER_LENGTH_FILE,
+                    true => (HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH)
+                };
+
+                let file_contents: Vec<u8> = target_file.split_off(split_length); // Separate contents from header
+
+                (file_algo_version, file_threshold, file_is_signed, file_nonce, file_pubkey, file_signature, file_contents)
             };
 
             println!("[+] Target file is encrypted; algorithm version {}", target_algo_version.to_string() );
+
+            nl();
             println!("[+] {} shares needed to decrypt", threshold.to_string() );
             println!("[+] Target file nonce: {}", hex::encode(&nonce) );
 
@@ -591,7 +882,7 @@ fn main() {
 
                                     let confirm: &str = strip_newline(&confirm[..]);
 
-                                    if confirm.is_empty() {
+                                    if confirm.is_empty() { // user gave no input
                                         eprintln!("[#] Okay. Continuing...");
                                     } else {
                                         let confirm = confirm.parse::<u8>();
@@ -610,6 +901,10 @@ fn main() {
                                         };
 
                                     }
+                                }
+
+                                if is_signed || shf.is_signed { // file is signed, therefore more checks!
+                                    share_signature_verification(is_signed, pub_key, /*signature,*/ &shf, &path, strict);
                                 }
 
                                 shares.push(shf.share_data);
