@@ -899,12 +899,20 @@ fn main() {
             let glob_pattern: String;
             
             if all { // If we've set to search all files
-                glob_pattern = "*".to_string();
+                glob_pattern = stringify_path(&shares_dir).to_owned() + "*";
             }
             else {
-                glob_pattern = stringify_path(&shares_dir).to_owned() + "*.ccms"; 
+                let mut path_str = stringify_path(&shares_dir).to_owned();
+
+                if path_str.chars().last().unwrap() != '/' && path_str.chars().last().unwrap() != '\\' {
+                    path_str += "/" 
+                }
+
+                glob_pattern = path_str + "*.ccms"; 
             } 
-            
+           
+            println!("{:?}", glob_pattern);
+
             // horrible nesting incoming
             for file in glob(&glob_pattern).expect("[!] Failed to read share file directory. Is it invalid?") { // Push shares to vector
                 match file {
