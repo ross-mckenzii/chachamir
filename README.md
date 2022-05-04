@@ -1,6 +1,6 @@
 # chachamir
 
-![ChaChaMir](https://ross.exposed/img/ccm_w_text.png "ChaChaMir")
+![ChaChaMir](https://codeberg.org/ross-mckenzie/chachamir/raw/commit/3cc2743ad3b40d1ab8e344ca2813448152f1e643/assets/ccm_w_text.png "ChaChaMir")
 
 ChaCha20-based file encryption tool, utilising Shamir's Secret Sharing to distribute its key. Can optionally use ed25519 signatures to ensure integrity of encrypted files and shares.
 
