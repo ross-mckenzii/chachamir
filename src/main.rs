@@ -412,7 +412,7 @@ fn chacha_decrypt(u8_key: Vec<u8>, u8_nonce: Vec<u8>, ciphertext: &[u8] ) -> Res
     // Decrypt the ciphertext
     let plaintext = match cc20.decrypt(nonce, ciphertext) {
         Ok(plain) => Ok(plain),
-        Err(error) => { // aead doesn't use a normal Error to avoid side-channel leaks
+        Err(_error) => { // aead doesn't use a normal Error to avoid side-channel leaks
             Err( Error::new( ErrorKind::Other, "[reason obfuscated]" ) )
         } 
     };
@@ -898,16 +898,16 @@ fn main() {
             let mut shares: Vec<Share> = Vec::new();
             let glob_pattern: String;
             
-            if all { // If we've set to search all files
-                glob_pattern = stringify_path(&shares_dir).to_owned() + "*";
+            let mut path_str = stringify_path(&shares_dir).to_owned();
+
+            if path_str.chars().last().unwrap() != '/' && path_str.chars().last().unwrap() != '\\' {
+                path_str += "/" 
             }
-            else {
-                let mut path_str = stringify_path(&shares_dir).to_owned();
-
-                if path_str.chars().last().unwrap() != '/' && path_str.chars().last().unwrap() != '\\' {
-                    path_str += "/" 
-                }
-
+            
+            if all { // If we've set to search all files
+                glob_pattern = path_str + "*"; 
+            }
+            else { // otherwise, only grab .ccms files
                 glob_pattern = path_str + "*.ccms"; 
             } 
            
