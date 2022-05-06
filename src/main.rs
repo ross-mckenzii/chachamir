@@ -135,13 +135,13 @@ const HEADER_IS_SIGNED_BYTE_SHARE: usize = 7;
 /* FILE HEADER STRUCTURE
 
 Files (18 bytes w/o public key and sig)
-67 67 77 VV TT SS NN NN NN NN NN NN NN NN NN NN NN NN
+43 43 4D VV TT SS NN NN NN NN NN NN NN NN NN NN NN NN
 (32 byte public key)
 (64 byte signature)
 content
 
 Shares (20 bytes w/o public key and sig)
-67 67 77 83 VV TT SS NN NN NN NN NN NN NN NN NN NN NN NN 00
+43 43 4D 53 VV TT SS NN NN NN NN NN NN NN NN NN NN NN NN 00
 (32 byte public key)
 (64 byte signature)
 content
