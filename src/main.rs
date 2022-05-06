@@ -326,6 +326,14 @@ fn is_encrypted(file: &Vec<u8>) -> Result<Vec<u8>> { // checks if the target fil
         return Err( Error::new( ErrorKind::Other, "File not encrypted (CCM header missing)" ) )
     }
 
+    let file_is_signed_u8 = file[HEADER_IS_SIGNED_BYTE_FILE - 1]; // is the file signed?
+
+    if file_is_signed_u8 != 0{
+        if file.len() < (HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH) { // File claims to be signed but is too small 
+            return Err( Error::new( ErrorKind::Other, "File not encrypted (smaller than signed CCM header)" ) )
+        }
+    }
+
     // Returns full header if successful
     if file[HEADER_IS_SIGNED_BYTE_FILE] != 0 { // signed header
         Ok( file[0..HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH].to_vec() ) 
@@ -443,7 +451,7 @@ fn construct_header_share(threshold: u8, is_signed: bool, nonce: &Vec<u8> ) -> V
     return share_header
 }
 
-fn share_signature_verification(
+fn share_signature_verification( // verification of share signatures
     is_signed: bool, // whether the FILE is signed
     pub_key: Option<PublicKey>, // the FILE'S public key
     //signature: Option<Signature>, // the FILE'S signature
@@ -452,12 +460,7 @@ fn share_signature_verification(
 
     strict: bool ){ // verifies signatures between a file and a share
 
-    let mut stop_user: bool = false; // set to true if we need to stop the user about share validity
-
-    let pub_key = pub_key.unwrap();
-    //let signature = signature.unwrap();
-
-    let share_pub_key = match shf.pub_key {
+    let share_pub_key = match shf.pub_key { // Check if share has public key
         Some(pk) => pk,
         None => { // Share is missing a public key
             enl();
@@ -466,12 +469,12 @@ fn share_signature_verification(
             eprintln!("[#] its integrity cannot be verified.");
 
             die_on_strict(strict);
-            stop_user = true;
+            ask_to_continue();
             return
         }
     };
 
-    let share_signature = match shf.signature {
+    let share_signature = match shf.signature { // Check if share has signature (it really should if we're in this function)
         Some(pk) => pk,
         None => { // Share is missing a signature
             enl();
@@ -480,7 +483,7 @@ fn share_signature_verification(
             eprintln!("[#] its integrity cannot be verified.");
 
             die_on_strict(strict);
-            stop_user = true;
+            ask_to_continue();
             return
         }
     };
@@ -492,19 +495,25 @@ fn share_signature_verification(
         eprintln!("[#] but this share believes it should be.");
 
         die_on_strict(strict);
-        stop_user = true;
+        ask_to_continue();
     }
 
-    if share_pub_key.to_bytes() != pub_key.to_bytes() { // share and file use differing public keys 
-        enl();
-        eprintln!("[#] Signing mismatch from share {}", &path.display());
-        eprintln!("[#] File and share do not use the same public key!");
-        enl();
-        eprintln!("[#] File public key:  {}", hex::encode( pub_key.to_bytes() ) );
-        eprintln!("[#] Share public key: {}", hex::encode( share_pub_key.to_bytes() ) );
+    else { // Check signature public key against file's public key, if we have both
+        let file_pub_key = pub_key.unwrap(); // Unwrap file's public key *now* (we'd panic if we did it earlier)
+        //let signature = signature.unwrap();
 
-        die_on_strict(strict);
-        stop_user = true;
+        if share_pub_key.to_bytes() != file_pub_key.to_bytes() { // share and file use differing public keys 
+            enl();
+            eprintln!("[#] Signing mismatch from share {}", &path.display());
+            eprintln!("[#] File and share do not use the same public key!");
+            enl();
+            eprintln!("[#] File public key:  {}", hex::encode( file_pub_key.to_bytes() ) );
+            eprintln!("[#] Share public key: {}", hex::encode( share_pub_key.to_bytes() ) );
+    
+            die_on_strict(strict);
+            ask_to_continue();
+        }
+
     }
 
     if shf.is_signed { // Verify a share's signature
@@ -519,11 +528,17 @@ fn share_signature_verification(
         let _share_verification = match share_verification {
             Ok(v) => v,
             Err(error) => { // Share verification failed. Uh oh spaghetti-os
+                let mut file_pub_key = String::from("[ABSENT]");
+
+                if is_signed { // give file public key in error msg
+                    file_pub_key = hex::encode( pub_key.unwrap().to_bytes() );
+                }
+
                 enl();
                 eprintln!("[#] Signing mismatch from share {}", &path.display());
                 eprintln!("[#] Share verification from public key failed!");
                 enl();
-                eprintln!("[#] File public key:  {}", hex::encode( pub_key.to_bytes() ) );
+                eprintln!("[#] File public key:  {}", &file_pub_key );
                 eprintln!("[#] Share public key: {}", hex::encode( share_pub_key.to_bytes() ) );
                 enl();
                 eprintln!("[#] -----------------------------------------------------" );
@@ -534,14 +549,11 @@ fn share_signature_verification(
                 enl();
                 eprintln!("[#] More information:" );
                 eprintln!("[#] {}", error.to_string() );
+                
                 die_on_strict(strict);
-                stop_user = true;
+                ask_to_continue();
             }
         };
-    }
-
-    if stop_user { // stop user if we have to
-        ask_to_continue();
     }
 }
 
@@ -826,12 +838,6 @@ fn main() {
                 
                 if file_is_signed_u8 != 0 { // Retrieve public key and signature from file
                     file_is_signed = true;
-
-                    if target_file.len() < (HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH + SIGNATURE_LENGTH) { 
-                        // this is clearly too small and we'll panic if we split on less than this
-                        println!("[!] Target file failed validation: smaller than signed CCM header" );
-                        process::exit(1);
-                    }
         
                     let file_pubkey_res = PublicKey::from_bytes(
                         &target_header[HEADER_LENGTH_FILE..(HEADER_LENGTH_FILE + PUBLIC_KEY_LENGTH)]
@@ -910,10 +916,8 @@ fn main() {
             else { // otherwise, only grab .ccms files
                 glob_pattern = path_str + "*.ccms"; 
             } 
-           
-            println!("{:?}", glob_pattern);
 
-            // horrible nesting incoming
+            // horrible nesting incoming -- pulling shares from file and processing them
             for file in glob(&glob_pattern).expect("[!] Failed to read share file directory. Is it invalid?") { // Push shares to vector
                 match file {
                     Ok(path) => {
@@ -960,7 +964,7 @@ fn main() {
                                     }
                                 }
 
-                                if is_signed && shf.is_signed { // file is signed, therefore more checks!
+                                if is_signed || shf.is_signed { // share is signed, therefore more checks!
                                     share_signature_verification(is_signed, pub_key, /*signature,*/ &shf, &path, strict);
                                 }
 
