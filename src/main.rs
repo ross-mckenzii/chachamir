@@ -22,6 +22,9 @@ use std::path::{PathBuf, Path};
 use std::process;
 use std::str;
 
+// Used for the timer
+use std::time::{Duration, Instant};
+
 // pulling from our crates
 use chacha20poly1305::aead::{Aead, NewAead};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
@@ -695,8 +698,12 @@ fn main() {
 
             let mut share_i: i32 = 1;
 
+            // [ RECORD TIME ]
+            let _start_1 = Instant::now();
+
             for s in shares { // iterate through shares
                 println!("[&] Writing share # {}...", share_i);
+
                 // we do not include the share number or totals as that is encoded within the share data itself,
                 // so just push the universal header and the share data
 
@@ -731,13 +738,27 @@ fn main() {
                 let share_full: Vec<u8> = share_full.iter().cloned().chain(s).collect();
 
                 write_file(&this_share_path, &share_full);
+
                 share_i += 1;
             };
+
+            // [ PRINT TIME ]
+            let _elapsed_1 = _start_1.elapsed();
+            println!("[$] Share write took {} ms", _elapsed_1.as_millis() );
+
             // Done with share stuff
             nl();
 
             // Encrypt file
+
+            // [ RECORD TIME ]
+            let _start_2 = Instant::now();
+
             let mut file_encrypted: Vec<u8> = chacha_encrypt(recovered_key, nonce.to_vec(), &file_plaintext);
+
+            // [ PRINT TIME ]
+            let _elapsed_2 = _start_2.elapsed();
+            println!("[$] ChaCha20 encryption took {} ms", _elapsed_2.as_millis() );
 
             // --- Construct encrypted file for saving
 
@@ -764,6 +785,9 @@ fn main() {
             // ----- signatures ---------------------
 
             if sign {
+                // [ RECORD TIME ]
+                let _start_3 = Instant::now();
+
                 enc_file.extend( ed25519_bytes_pub );
 
                 let mut enc_file_signable: Vec<u8> = enc_file.clone();
@@ -775,6 +799,9 @@ fn main() {
                 enc_file.extend(&file_ed25519_signature.to_bytes() );
                 println!("[-] Signed encrypted file");
 
+                // [ PRINT TIME ]
+                let _elapsed_3 = _start_3.elapsed();
+                println!("[$] File signing took {} ms", _elapsed_3.as_millis() );
             }
 
             // --------------------------------------
@@ -1036,6 +1063,9 @@ fn main() {
             // Attempt to recover key from shares
             println!("[-] Attempting key recovery with {} share(s)...", &shares.len() );
 
+            // [ RECORD TIME ]
+            let _start_4 = Instant::now();
+
             let sss = Sharks(threshold);
             let recovered_key = match sss.recover(&shares) {
                 Ok(key) => {
@@ -1048,8 +1078,15 @@ fn main() {
                 }
             };
 
+            // [ PRINT TIME ]
+            let _elapsed_4 = _start_4.elapsed();
+            println!("[$] Share reconstruction took {} ms", _elapsed_4.as_millis() );
+
             nl();
             println!("[-] Decrypting file...");
+
+            // [ RECORD TIME ]
+            let _start_5 = Instant::now();
 
             // Decrypt file
             let file_plaintext: Vec<u8> = match chacha_decrypt(recovered_key, nonce.to_vec(), &file_contents) {
@@ -1059,6 +1096,12 @@ fn main() {
                     process::exit(1);
                 }
             };
+
+            nl();
+
+            // [ PRINT TIME ]
+            let _elapsed_5 = _start_5.elapsed();
+            println!("[$] File decryption took {} ms", _elapsed_5.as_millis() );
 
             nl();
 
