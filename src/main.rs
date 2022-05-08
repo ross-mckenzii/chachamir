@@ -23,7 +23,7 @@ use std::process;
 use std::str;
 
 // Used for the timer
-use std::time::{Duration, Instant};
+use std::time::{Instant};
 
 // pulling from our crates
 use chacha20poly1305::aead::{Aead, NewAead};
