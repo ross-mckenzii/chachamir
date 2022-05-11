@@ -719,6 +719,9 @@ fn main() {
                 let mut share_full: Vec<u8> = share_header.iter().cloned().collect();
 
                 if sign { // are we signing shares?
+                    // [ RECORD TIME ]
+                    let _start_ss = Instant::now();
+
                     share_full.extend(&ed25519_bytes_pub);
 
                     // sign the contents of the header (incl public key) + share content
@@ -732,6 +735,10 @@ fn main() {
                     share_full.extend(&share_ed25519_signature.to_bytes() );
 
                     println!("[-] Signed share # {share_i}");
+
+                    // [ PRINT TIME ]
+                    let _elapsed_ss = _start_ss.elapsed();
+                    println!("[$] Share signing took {} ms", _elapsed_ss.as_millis() );
                 }
 
                 // write share content in
