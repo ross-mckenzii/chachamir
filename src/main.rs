@@ -864,10 +864,6 @@ fn main() {
                 let mut file_signature: Option<Signature> = None; // signature, if it exists
                 
                 if file_is_signed_u8 != 0 { // Retrieve public key and signature from file
-                    // [ RECORD TIME ]
-                    let _start_v = Instant::now();
-
-
                     file_is_signed = true;
         
                     let file_pubkey_res = PublicKey::from_bytes(
@@ -894,7 +890,9 @@ fn main() {
                     );
 
                     file_signature = match file_signature_res {
-                        Ok(sig) => Some(sig),
+                        Ok(sig) => {
+                            Some(sig)
+                        },
                         Err(error) => {
                             eprintln!("[!] Target file has a bad signature" );
                             eprintln!("[!] {}", error.to_string() );
@@ -910,11 +908,10 @@ fn main() {
 
                     if file_is_signed {
                         println!("[+] Target file is signed" );
+
+
                     }
 
-                    // [ PRINT TIME ]
-                    let _elapsed_v = _start_v.elapsed();
-                    println!("[$] File verification took {} ms", _elapsed_v.as_millis() );
                 }
         
                 let split_length = match file_is_signed { // change header length depending on if signed or unsigned
@@ -1000,7 +997,14 @@ fn main() {
                                 }
 
                                 if is_signed || shf.is_signed { // share is signed, therefore more checks!
+                                    // [ RECORD TIME ]
+                                    let _start_vs = Instant::now();
+
                                     share_signature_verification(is_signed, pub_key, /*signature,*/ &shf, &path, strict);
+
+                                    // [ PRINT TIME ]
+                                    let _elapsed_vs = _start_vs.elapsed();
+                                    println!("[$] Share verification took {} ms", _elapsed_vs.as_millis() );
                                 }
 
                                 shares.push(shf.share_data);
@@ -1025,7 +1029,7 @@ fn main() {
 
             if is_signed { // Check file signature
                 // [ RECORD TIME ]
-                let _start_s4 = Instant::now();
+                let _start_v = Instant::now();
 
                 let pub_key = pub_key.unwrap();
                 let signature = signature.unwrap();
@@ -1071,8 +1075,8 @@ fn main() {
                 };
 
                 // [ PRINT TIME ]
-                let _elapsed_s4 = _start_s4.elapsed();
-                println!("[$] Share verification took {} ms", _elapsed_s4.as_millis() );
+                let _elapsed_v = _start_v.elapsed();
+                println!("[$] File verification took {} ms", _elapsed_v.as_millis() );
             }
 
             // Attempt to recover key from shares
