@@ -815,7 +815,7 @@ fn main() {
 
             nl();
 
-            let (target_algo_version, mut threshold, is_signed, nonce, pub_key, signature, file_contents) = { // Process target file
+            let (target_algo_version, mut threshold, is_signed, nonce, pub_key, signature, file_contents, file_header) = { // Process target file
                 let mut target_file: Vec<u8> = read_file(&target_file);
 
                 let target_header = match is_encrypted(&target_file) { // exit if file is not encrypted
@@ -889,7 +889,7 @@ fn main() {
 
                 let file_contents: Vec<u8> = target_file.split_off(split_length); // Separate contents from header
 
-                (file_algo_version, file_threshold, file_is_signed, file_nonce, file_pubkey, file_signature, file_contents)
+                (file_algo_version, file_threshold, file_is_signed, file_nonce, file_pubkey, file_signature, file_contents, target_header)
             };
 
             println!("[+] Target file is encrypted; algorithm version {}", target_algo_version.to_string() );
@@ -999,8 +999,9 @@ fn main() {
                 reconstructed_file.push(target_algo_version);
                 // threshold
                 reconstructed_file.push(threshold);
-                // file is always signed, using "1"
-                reconstructed_file.push(1);
+                // signing bit
+                // this is probably bad memory wise but works for now until I go for refactoring :/
+                reconstructed_file.push(file_header[HEADER_IS_SIGNED_BYTE_FILE - 1]);
                 // nonce
                 reconstructed_file.extend(&nonce);
                 // public key
